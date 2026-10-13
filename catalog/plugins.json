@@ -3,7 +3,7 @@
     {
       "guid": "ee254a40-3124-408a-a867-199cc8de98bc",
       "repository": "jellysin/release-helper-sandbox",
-      "signerWorkflow": ".github/workflows/cycle.yml"
+      "signerWorkflow": ".github/workflows/release.yml"
     }
   ],
   "schemaVersion": 1
