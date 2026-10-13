@@ -1,0 +1,25 @@
+name: Prepare release PR
+run-name: Release PR for cycle ${{ inputs.cycle }}
+# Calls release-helper's reusable release-please workflow at the commit its consumers pin
+# (jellysin/repo, jellysin/plugin-lastfm), so the cycle tests what they run. The cycle dispatches it
+# twice: to open the release PR, and after the tag exists to mark the merged PR tagged.
+on:
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: Identifier of the cycle step that dispatched this run.
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-automation
+  cancel-in-progress: false
+jobs:
+  release:
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: write
+    uses: jellysin/release-helper/.github/workflows/release-please.yml@1357f403704538bee3df4d963268fa43f0b81d50 # v1.2.1

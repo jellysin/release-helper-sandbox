@@ -38,15 +38,19 @@ The sandbox plays both roles that release-helper serves:
 - a plugin catalog: `catalog/manifest.json` and `catalog/plugins.json` are the manifest and the
   allowlist that release-helper's catalog action reads and extends.
 
-A release cycle runs release-helper from one commit of its main branch: it records the next version,
-creates the tag and the draft with the prepare action, packages, attests and publishes the release on
-that tag, imports it into the catalog with the catalog action and checks the result. The workflows
-under `.github/workflows` hold the details.
+A release cycle runs release-helper from one commit of its main branch. It pushes a releasable commit,
+lets release-helper's reusable release-please workflow open the release PR and merges it, creates the
+tag and the draft with the prepare action, packages, attests and publishes the release on that tag,
+imports it into the catalog with the catalog action, checks the result, and runs the release-please
+workflow again to see the merged PR marked tagged. The reusable workflow is called at the commit
+release-helper's consumers pin. The workflows under `.github/workflows` hold the details.
 
 ## Write access
 
 Every workflow writes with its own job token, scoped to this repository. No token of another
-repository is stored here.
+repository is stored here. main is protected by `.github/rulesets/main.json` (pull requests, signed
+commits, linear history, the CI and governance checks): the cycle lands each change through a pull
+request it squash-merges once the forge reports it mergeable, as a consumer would.
 
 ## Licence
 
