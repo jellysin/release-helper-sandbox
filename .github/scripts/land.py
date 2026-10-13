@@ -1,9 +1,15 @@
 """Land a change on the protected main through a pull request, as the ruleset requires.
 
     land.py land BRANCH MESSAGE FILE...   commit FILEs (as in the work tree) on a new BRANCH from main
-                                         through the forge API (GitHub signs it), open a PR, dispatch CI
-                                         on the branch, squash-merge when CLEAN; print the merge commit
-    land.py merge NUMBER                  wait for CI on an open PR's head and squash-merge it when CLEAN
+                                         through the forge API (GitHub signs it), open a PR, let its CI
+                                         run and squash-merge when CLEAN; print the merge commit
+    land.py merge NUMBER                  let CI run on an open release PR and squash-merge it when CLEAN
+
+A pull request the job token opens starts a pull_request CI run that waits for approval
+(action_required), and only pull_request runs count as the PR's required checks. This script approves
+such a run, fail closed, only when the PR's author is github-actions[bot], its head is in this
+repository, its head commit was made in this cycle (CYCLE_STARTED) and every changed path is on the
+cycle's allow-list; anything else is reported and left waiting. A refused approval stops the cycle.
 
 Standard library and gh only, with the job's token. Every wait is bounded; any other state fails.
 """
@@ -18,7 +24,17 @@ from pathlib import Path
 
 REPO = os.environ["GITHUB_REPOSITORY"]
 CI_WORKFLOW = "ci.yml"
-POLLS, PAUSE = 60, 10  # at most ten minutes for CI to start and finish, and for the merge state to settle
+BOT = "github-actions[bot]"
+# Every path a cycle pull request may change: the record of the run, the release PR's version files
+# and the catalog. A pull request touching any other path is not approved.
+ALLOWED = {
+    "cycle/last-run.txt",
+    "version.txt",
+    "CHANGELOG.md",
+    ".release-please-manifest.json",
+    "catalog/manifest.json",
+}
+POLLS, PAUSE = 60, 10  # at most ten minutes for each wait
 
 
 def gh(*arguments, data=None):
@@ -52,23 +68,54 @@ def signed_commit(branch, base, message, files):
     return answer["data"]["createCommitOnBranch"]["commit"]["oid"]
 
 
-def wait_for_ci(branch, sha):
-    """Wait for the dispatched CI run on branch at sha to finish; fail unless it succeeded.
+def refusal(pr):
+    """Why the cycle may not approve CI for this PR, or None when it may."""
+    if pr["user"]["login"] != BOT:
+        return f"author is {pr['user']['login']}, not {BOT}"
+    if pr["head"]["repo"]["full_name"] != REPO:
+        return f"head is in {pr['head']['repo']['full_name']}"
+    files = api(f"repos/{REPO}/pulls/{pr['number']}/files?per_page=100")
+    outside = sorted(item["filename"] for item in files if item["filename"] not in ALLOWED)
+    if len(files) >= 100 or outside:
+        return "paths outside the cycle's allow-list: " + (", ".join(outside) or "100 files or more")
+    committed = api(f"repos/{REPO}/commits/{pr['head']['sha']}")["commit"]["committer"]["date"]
+    if committed < os.environ["CYCLE_STARTED"]:
+        return f"head commit {pr['head']['sha']} was made at {committed}, before this cycle started"
+    return None
 
-    A pull request the job token opens also starts a pull_request run that waits for approval
-    (action_required); only the run the cycle dispatched decides.
-    """
-    query = f"branch={branch}&head_sha={sha}&event=workflow_dispatch&per_page=5"
+
+def pull_request_runs(sha):
+    runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?event=pull_request&head_sha={sha}&per_page=5")
+    return runs["workflow_runs"]
+
+
+def approve_and_wait(number):
+    """Approve the PR's waiting pull_request CI run when the PR qualifies, and wait for it to succeed."""
+    pr = api(f"repos/{REPO}/pulls/{number}")
+    sha = pr["head"]["sha"]
+    reason = refusal(pr)
+    if reason is not None:
+        raise SystemExit(f"PR #{number}: CI not approved, left waiting: {reason}")
     for _ in range(POLLS):
-        runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?{query}")
-        run = runs["workflow_runs"][0] if runs["workflow_runs"] else None
-        if run and run["status"] == "completed":
+        runs = pull_request_runs(sha)
+        if runs:
+            break
+        time.sleep(PAUSE)
+    else:
+        raise SystemExit(f"PR #{number}: no pull_request CI run appeared for {sha}")
+    for run in runs:
+        if run["conclusion"] == "action_required":
+            gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
+            print(f"PR #{number}: approved CI run {run['html_url']}")
+    for _ in range(POLLS):
+        run = pull_request_runs(sha)[0]
+        if run["status"] == "completed" and run["conclusion"] != "action_required":
             if run["conclusion"] != "success":
-                raise SystemExit(f"CI on {branch} at {sha} concluded {run['conclusion']}: {run['html_url']}")
-            print(f"CI on {branch}: success {run['html_url']}")
+                raise SystemExit(f"PR #{number}: CI concluded {run['conclusion']}: {run['html_url']}")
+            print(f"PR #{number}: CI success {run['html_url']}")
             return
         time.sleep(PAUSE)
-    raise SystemExit(f"CI on {branch} at {sha} did not finish in time")
+    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
 
 
 def merge_when_clean(number):
@@ -91,7 +138,7 @@ def merge_when_clean(number):
 def land(branch, message, files):
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     api(f"repos/{REPO}/git/refs", "--method", "POST", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
-    head = signed_commit(branch, base, message, files)
+    signed_commit(branch, base, message, files)
     url = gh(
         "pr",
         "create",
@@ -105,16 +152,12 @@ def land(branch, message, files):
         "Opened by the release cycle; merged by it when CLEAN.",
     )
     number = url.rsplit("/", 1)[1]
-    gh("workflow", "run", CI_WORKFLOW, "--ref", branch)
-    wait_for_ci(branch, head)
+    approve_and_wait(number)
     return merge_when_clean(number)
 
 
 def merge(number):
-    pr = json.loads(gh("pr", "view", str(number), "--json", "headRefName,headRefOid,state"))
-    if pr["state"] != "OPEN":
-        raise SystemExit(f"PR #{number} is {pr['state']}")
-    wait_for_ci(pr["headRefName"], pr["headRefOid"])
+    approve_and_wait(number)
     return merge_when_clean(number)
 
 
