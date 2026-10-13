@@ -51,6 +51,10 @@ jobs:
           metadata-path: plugin/plugin.json
           tag: ${{ github.ref_name }}
           output-directory: ${{ runner.temp }}/dist
+      - name: Attest every release artifact
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.directory }}/*
       - name: Verify bytes and attestations, upload to the draft and publish
         uses: ./.release-helper/actions/publish
         with:
