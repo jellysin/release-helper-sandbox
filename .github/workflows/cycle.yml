@@ -1,0 +1,96 @@
+name: Release cycle
+run-name: Release cycle of release-helper ${{ inputs.helper || 'main' }}
+# One full release of the fixture plugin with release-helper from one commit: record the next version
+# on main, prepare the tag and the draft, package, attest and publish on the tag, import the release
+# into the catalog and check what the forge and the catalog now hold. Every write uses this
+# repository's job tokens; the dispatched runs use their own.
+on:
+  workflow_dispatch:
+    inputs:
+      helper:
+        description: Full SHA of the jellysin/release-helper commit under test; empty takes its main head.
+        required: false
+        type: string
+  schedule:
+    - cron: '23 4 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: release-cycle
+  cancel-in-progress: false
+jobs:
+  cycle:
+    name: Release cycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve the release-helper commit under test
+        id: helper
+        env:
+          REQUESTED: ${{ inputs.helper }}
+        run: |
+          helper="${REQUESTED:-$(gh api repos/jellysin/release-helper/commits/main --jq .sha)}"
+          [[ "$helper" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$helper" >> "$GITHUB_OUTPUT"
+          echo "release-helper $helper"
+      - name: Record the next version on main
+        id: version
+        run: |
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/tags?per_page=100" --jq '[.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | ltrimstr("v") | split(".") | map(tonumber)] | sort | last // [0, 0, 0] | map(tostring) | join(".")')"
+          IFS=. read -r major minor patch <<<"$latest"
+          version="$major.$minor.$((patch + 1))"
+          echo "$version" > version.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --quiet --message "chore: record version $version for a release cycle of release-helper ${{ steps.helper.outputs.sha }}" version.txt
+          git push --quiet origin HEAD:main
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "next version $version on $(git rev-parse HEAD)"
+      - name: Prepare the tag and the draft
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+          HELPER: ${{ steps.helper.outputs.sha }}
+        run: |
+          gh workflow run prepare-release.yml --ref main -f tag="$TAG" -f commit="$COMMIT" -f helper="$HELPER"
+          .github/scripts/watch-run.sh prepare-release.yml "Prepare $TAG"
+      - name: Package, attest and publish on the tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          HELPER: ${{ steps.helper.outputs.sha }}
+        run: |
+          gh workflow run release.yml --ref "$TAG" -f helper="$HELPER"
+          .github/scripts/watch-run.sh release.yml "Publish $TAG"
+      - name: Check out the release-helper commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jellysin/release-helper
+          ref: ${{ steps.helper.outputs.sha }}
+          path: .release-helper
+          persist-credentials: false
+      - name: Import the release into the catalog
+        uses: ./.release-helper/actions/catalog
+        with:
+          manifest: catalog/manifest.json
+          allowlist: catalog/plugins.json
+          token: ${{ github.token }}
+      - name: Check the release on the forge and its catalog entry
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: python3 .github/scripts/check-cycle.py "$TAG"
+      - name: Record the catalog on main
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git add catalog/manifest.json
+          git commit --quiet --message "chore: import $TAG into the sandbox catalog"
+          git push --quiet origin HEAD:main

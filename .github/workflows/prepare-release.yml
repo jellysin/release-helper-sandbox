@@ -1,0 +1,53 @@
+name: Prepare release
+run-name: Prepare ${{ inputs.tag }}
+# Creates the exact tag on a commit of main and one unpublished draft with release-helper's prepare
+# action, taken from the release-helper commit under test. The cycle workflow dispatches it.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, v followed by the version the commit records.
+        required: true
+        type: string
+      commit:
+        description: Full SHA of the commit on main that records the version.
+        required: true
+        type: string
+      helper:
+        description: Full SHA of the jellysin/release-helper commit under test.
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Tag and draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Refuse a release-helper reference that is not a full commit SHA
+        env:
+          HELPER: ${{ inputs.helper }}
+        run: '[[ "$HELPER" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the release-helper commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jellysin/release-helper
+          ref: ${{ inputs.helper }}
+          path: .release-helper
+          persist-credentials: false
+      - name: Create the tag and one unpublished draft
+        uses: ./.release-helper/actions/prepare
+        with:
+          tag: ${{ inputs.tag }}
+          commit: ${{ inputs.commit }}
+          token: ${{ github.token }}

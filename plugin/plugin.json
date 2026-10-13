@@ -1,0 +1,11 @@
+{
+  "assemblyFile": "JellySin.Plugin.Sandbox.dll",
+  "category": "General",
+  "description": "Test data for jellysin/release-helper",
+  "guid": "ee254a40-3124-408a-a867-199cc8de98bc",
+  "name": "JellySin Release Helper Sandbox",
+  "overview": "A fixture plugin that exists to be packaged, attested, published and imported",
+  "owner": "JellySin",
+  "repository": "jellysin/release-helper-sandbox",
+  "targetAbi": "12.0.0.0"
+}
