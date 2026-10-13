@@ -53,9 +53,14 @@ def signed_commit(branch, base, message, files):
 
 
 def wait_for_ci(branch, sha):
-    """Wait for the CI run on branch at sha to finish; fail unless it succeeded."""
+    """Wait for the dispatched CI run on branch at sha to finish; fail unless it succeeded.
+
+    A pull request the job token opens also starts a pull_request run that waits for approval
+    (action_required); only the run the cycle dispatched decides.
+    """
+    query = f"branch={branch}&head_sha={sha}&event=workflow_dispatch&per_page=5"
     for _ in range(POLLS):
-        runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?branch={branch}&head_sha={sha}&per_page=5")
+        runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?{query}")
         run = runs["workflow_runs"][0] if runs["workflow_runs"] else None
         if run and run["status"] == "completed":
             if run["conclusion"] != "success":
