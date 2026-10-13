@@ -55,3 +55,4 @@ request it squash-merges once the forge reports it mergeable, as a consumer woul
 ## Licence
 
 EUPL-1.2, see [LICENSE](LICENSE).
+Planted line: a path outside the cycle allow-list (negative control, reverted after the run).
