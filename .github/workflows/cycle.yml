@@ -5,7 +5,8 @@ run-name: Release cycle of release-helper ${{ inputs.helper || 'main' }}
 # opens the release PR, the cycle merges it, prepares the tag and the draft, packages, attests and
 # publishes on the tag, imports the release into the catalog, checks forge and catalog, sees the merged
 # release PR marked tagged and lands the catalog through a pull request. main is protected: every write
-# is a pull request squash-merged when the forge reports it CLEAN (.github/scripts/land.py). The
+# is a pull request whose CI the cycle approves, fail closed, and squash-merges when the forge reports it
+# CLEAN (.github/scripts/land.py). The
 # release-helper commit under test is a notice annotation ("release-helper <sha>") that
 # jellysin/release-helper reads to report the cycle on its own main.
 on:
@@ -47,6 +48,7 @@ jobs:
           [[ "$helper" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$helper" >> "$GITHUB_OUTPUT"
           echo "::notice title=release-helper::$helper"
+          echo "CYCLE_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Land a releasable change through a pull request
         env:
           HELPER: ${{ steps.helper.outputs.sha }}
