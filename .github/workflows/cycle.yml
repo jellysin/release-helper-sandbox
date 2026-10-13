@@ -59,7 +59,7 @@ jobs:
         run: |
           gh workflow run release-automation.yml --ref main -f cycle="$GITHUB_RUN_ID-open"
           .github/scripts/watch-run.sh release-automation.yml "Release PR for cycle $GITHUB_RUN_ID-open"
-          pr="$(gh pr list --head release-please--branches--main --state open --json number,title --jq '.[0] | "\(.number) \(.title)"')"
+          pr="$(gh pr list --state open --label 'autorelease: pending' --json number,title,headRefName --jq '[.[] | select(.headRefName | startswith("release-please--branches--main"))][0] | "\(.number) \(.title)"')"
           number="${pr%% *}"
           title="${pr#* }"
           [[ "$title" =~ ^chore\(main\):\ release\ [0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "no release PR: '$pr'" >&2; exit 1; }
