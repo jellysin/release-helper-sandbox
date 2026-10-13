@@ -12,6 +12,12 @@ profiles:
 facets:
   - security:high
   - agent:sandboxed
+# One maintainer: review mode renders zero required approvals. The count stays, so that
+# restoring independent review keeps the minimum.
+overrides:
+  branch_protection:
+    required_approving_reviewers: 1
+    review_mode: single_maintainer
 register:
   sources:
     expected: 13

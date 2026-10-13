@@ -48,7 +48,9 @@ release-helper's consumers pin. The workflows under `.github/workflows` hold the
 ## Write access
 
 Every workflow writes with its own job token, scoped to this repository. No token of another
-repository is stored here.
+repository is stored here. main is protected by `.github/rulesets/main.json` (pull requests, signed
+commits, linear history, the CI and governance checks): the cycle lands each change through a pull
+request it squash-merges once the forge reports it mergeable, as a consumer would.
 
 ## Licence
 

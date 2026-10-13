@@ -28,3 +28,4 @@ test: build
 
 build:
 	@python3 -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])' .github/scripts/check-cycle.py
+	@python3 -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])' .github/scripts/land.py

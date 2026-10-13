@@ -1,9 +1,13 @@
 name: Release cycle
 run-name: Release cycle of release-helper ${{ inputs.helper || 'main' }}
-# One full release of the fixture plugin with release-helper from one commit: a releasable commit, the
-# release PR from release-helper's reusable release-please workflow, merged; then prepare the tag and the draft, package, attest and publish on the tag, import the release
-# into the catalog and check what the forge and the catalog now hold. Every write uses this
-# repository's job tokens; the dispatched runs use their own.
+# One full release of the fixture plugin with release-helper from one commit, the way a consumer runs it:
+# a releasable change lands through a pull request, release-helper's reusable release-please workflow
+# opens the release PR, the cycle merges it, prepares the tag and the draft, packages, attests and
+# publishes on the tag, imports the release into the catalog, checks forge and catalog, sees the merged
+# release PR marked tagged and lands the catalog through a pull request. main is protected: every write
+# is a pull request squash-merged when the forge reports it CLEAN (.github/scripts/land.py). The
+# release-helper commit under test is a notice annotation ("release-helper <sha>") that
+# jellysin/release-helper reads to report the cycle on its own main.
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +16,7 @@ on:
         required: false
         type: string
   schedule:
-    - cron: '23 4 * * *'
+    - cron: '23 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -22,7 +26,7 @@ jobs:
   cycle:
     name: Release cycle
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     permissions:
       contents: write
       actions: write
@@ -33,6 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Resolve the release-helper commit under test
         id: helper
         env:
@@ -41,13 +46,14 @@ jobs:
           helper="${REQUESTED:-$(gh api repos/jellysin/release-helper/commits/main --jq .sha)}"
           [[ "$helper" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$helper" >> "$GITHUB_OUTPUT"
-          echo "release-helper $helper"
-      - name: Commit a releasable change on main
+          echo "::notice title=release-helper::$helper"
+      - name: Land a releasable change through a pull request
+        env:
+          HELPER: ${{ steps.helper.outputs.sha }}
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit --quiet --allow-empty --message "fix: release cycle of release-helper ${{ steps.helper.outputs.sha }}"
-          git push --quiet origin HEAD:main
+          mkdir -p cycle
+          printf 'release-helper %s\ncycle run %s\n' "$HELPER" "$GITHUB_RUN_ID" > cycle/last-run.txt
+          python3 .github/scripts/land.py land "cycle/$GITHUB_RUN_ID-change" "fix: release cycle of release-helper $HELPER" cycle/last-run.txt
       - name: Open the release PR with release-helper's reusable release-please workflow
         id: release-pr
         run: |
@@ -59,16 +65,15 @@ jobs:
           [[ "$title" =~ ^chore\(main\):\ release\ [0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "no release PR: '$pr'" >&2; exit 1; }
           echo "number=$number" >> "$GITHUB_OUTPUT"
           echo "release PR #$number: $title"
-      - name: Merge the release PR and read the version it records
+      - name: Merge the release PR when CLEAN and read the version it records
         id: version
         env:
           NUMBER: ${{ steps.release-pr.outputs.number }}
         run: |
-          gh pr merge "$NUMBER" --squash
+          python3 .github/scripts/land.py merge "$NUMBER"
           commit="$(gh pr view "$NUMBER" --json mergeCommit --jq .mergeCommit.oid)"
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           git fetch --quiet origin main
-          git merge --ff-only --quiet origin/main
           version="$(git show "$commit:version.txt" | tr -d '\n')"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
@@ -114,10 +119,8 @@ jobs:
           labels="$(gh pr view "$NUMBER" --json labels --jq '[.labels[].name] | sort | join(",")')"
           [[ ",$labels," == *",autorelease: tagged,"* && ",$labels," != *",autorelease: pending,"* ]] || { echo "release PR #$NUMBER labels: $labels" >&2; exit 1; }
           echo "release PR #$NUMBER labels: $labels"
-      - name: Record the catalog on main
+      - name: Land the catalog through a pull request
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          git add catalog/manifest.json
-          git commit --quiet --message "chore: import $TAG into the sandbox catalog"
-          git push --quiet origin HEAD:main
+          python3 .github/scripts/land.py land "cycle/$GITHUB_RUN_ID-catalog" "chore: import $TAG into the sandbox catalog" catalog/manifest.json
