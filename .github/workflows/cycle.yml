@@ -55,8 +55,7 @@ jobs:
         run: |
           mkdir -p cycle
           printf 'release-helper %s\ncycle run %s\n' "$HELPER" "$GITHUB_RUN_ID" > cycle/last-run.txt
-          echo 'Planted line: a path outside the cycle allow-list (negative control, reverted after the run).' >> README.md
-          python3 .github/scripts/land.py land "cycle/$GITHUB_RUN_ID-change" "fix: release cycle of release-helper $HELPER" cycle/last-run.txt README.md
+          python3 .github/scripts/land.py land "cycle/$GITHUB_RUN_ID-change" "fix: release cycle of release-helper $HELPER" cycle/last-run.txt
       - name: Open the release PR with release-helper's reusable release-please workflow
         id: release-pr
         run: |
