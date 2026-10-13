@@ -1,5 +1,27 @@
 # JellySin Release Helper Sandbox
 
+<!-- praetor:readme-governance:start -->
+[![HISS Adopted][praetor-hiss-badge]][praetor-hiss-agents]
+
+Praetor manages this repository's declared governance policy. This managed
+block records adoption state; it is not a verification certificate.
+
+**Verification**: `make verify-all` runs the repository's configured
+verification cascade.
+
+**HISS Audit**: `praetorctl audit` enforces policy, generated-surface
+integrity, and the debt ratchet.
+
+**Context Sync**: `praetorctl compile-context --verify` verifies every
+generated agent context against `AGENTS.md`.
+
+**Debt Baseline**: `.standards-baseline.json` anchors the debt ratchet at
+0 recorded infractions; audit forbids growth.
+
+[praetor-hiss-badge]: https://img.shields.io/badge/Standards-HISS%20Adopted-blue
+[praetor-hiss-agents]: https://github.com/jellysin/release-helper-sandbox/blob/HEAD/AGENTS.md
+<!-- praetor:readme-governance:end -->
+
 This repository is a test target for [jellysin/release-helper](https://github.com/jellysin/release-helper).
 It is not a plugin. Its tags, releases, attestations and plugin repository entries are test data, made by
 automation to prove that release-helper's release path works against the real forge.
