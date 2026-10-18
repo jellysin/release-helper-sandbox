@@ -8,6 +8,70 @@
     "owner": "JellySin",
     "versions": [
       {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.30",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.30/release-helper-sandbox-0.1.30.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-18T18:32:35Z",
+        "version": "0.1.30.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.29",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.29/release-helper-sandbox-0.1.29.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-18T16:02:22Z",
+        "version": "0.1.29.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.28",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.28/release-helper-sandbox-0.1.28.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-18T11:27:47Z",
+        "version": "0.1.28.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.27",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.27/release-helper-sandbox-0.1.27.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-18T06:07:38Z",
+        "version": "0.1.27.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.26",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.26/release-helper-sandbox-0.1.26.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-18T01:16:42Z",
+        "version": "0.1.26.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.25",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.25/release-helper-sandbox-0.1.25.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-17T22:30:22Z",
+        "version": "0.1.25.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.24",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.24/release-helper-sandbox-0.1.24.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-17T19:36:56Z",
+        "version": "0.1.24.0"
+      },
+      {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.23",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.23/release-helper-sandbox-0.1.23.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-17T17:23:14Z",
+        "version": "0.1.23.0"
+      },
+      {
         "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.21",
         "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
         "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.21/release-helper-sandbox-0.1.21.zip",
