@@ -72,9 +72,20 @@ jobs:
         env:
           NUMBER: ${{ steps.release-pr.outputs.number }}
         # The milestone gate holds a release PR until its milestone closes; the hourly cycle
-        # releases every patch, so it labels its own release PR before CI runs on it.
+        # releases every patch, so it labels its own release PR. release-please dispatched CI on
+        # the branch before the label existed, so that run is waited for and re-run when it failed.
         run: |
           gh pr edit "$NUMBER" --add-label release-ready
+          branch="$(gh pr view "$NUMBER" --json headRefName --jq .headRefName)"
+          run="$(gh run list --workflow ci.yml --event workflow_dispatch --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          [[ "$run" =~ ^[0-9]+$ ]] || { echo "no dispatched CI run on $branch" >&2; exit 1; }
+          gh run watch "$run" --interval 10 > /dev/null
+          if [[ "$(gh run view "$run" --json conclusion --jq .conclusion)" != success ]]; then
+            gh run rerun "$run" --failed
+            sleep 10
+            gh run watch "$run" --exit-status --interval 10 > /dev/null
+          fi
+          echo "dispatched CI run $run on $branch: success"
           python3 .github/scripts/land.py merge "$NUMBER"
           commit="$(gh pr view "$NUMBER" --json mergeCommit --jq .mergeCommit.oid)"
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
