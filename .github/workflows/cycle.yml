@@ -71,7 +71,10 @@ jobs:
         id: version
         env:
           NUMBER: ${{ steps.release-pr.outputs.number }}
+        # The milestone gate holds a release PR until its milestone closes; the hourly cycle
+        # releases every patch, so it labels its own release PR before CI runs on it.
         run: |
+          gh pr edit "$NUMBER" --add-label release-ready
           python3 .github/scripts/land.py merge "$NUMBER"
           commit="$(gh pr view "$NUMBER" --json mergeCommit --jq .mergeCommit.oid)"
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
