@@ -23,6 +23,7 @@ audit:
 # The sandbox's verification is its release cycle against the forge (.github/workflows/cycle.yml);
 # locally the workflows and the cycle's scripts are linted.
 test: build
+	@python3 -m unittest discover -s tests
 	@actionlint
 	@bash -n .github/scripts/watch-run.sh
 

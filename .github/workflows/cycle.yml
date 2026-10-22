@@ -49,6 +49,9 @@ jobs:
           echo "sha=$helper" >> "$GITHUB_OUTPUT"
           echo "::notice title=release-helper::$helper"
           echo "CYCLE_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      # An earlier cycle stops at its bounded wait and leaves its PR; this cycle settles it first.
+      - name: Resume a cycle pull request an earlier cycle left open
+        run: python3 .github/scripts/land.py resume
       - name: Land a releasable change through a pull request
         env:
           HELPER: ${{ steps.helper.outputs.sha }}
