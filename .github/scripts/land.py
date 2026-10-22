@@ -54,7 +54,7 @@ def api(path, *arguments):
 
 def signed_commit(branch, base, message, files):
     """Commit the files on branch, whose head is base, through createCommitOnBranch; return the commit."""
-    additions = [{"path": name, "contents": base64.b64encode(Path(name).read_bytes()).decode()} for name in files]
+    additions = [{"path": name, "contents": base64.b64encode(content).decode()} for name, content in files.items()]
     headline, _, body = message.partition("\n")
     query = "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }"
     variables = {
@@ -176,7 +176,8 @@ def merge_when_clean(number):
 def land(branch, message, files):
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     api(f"repos/{REPO}/git/refs", "--method", "POST", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
-    signed_commit(branch, base, message, files)
+    contents = {name: Path(name).read_bytes() for name in files}
+    signed_commit(branch, base, message, contents)
     url = gh(
         "pr",
         "create",
@@ -199,9 +200,31 @@ def merge(number):
     return merge_when_clean(number)
 
 
-def resume():
-    """Settle the pull requests earlier cycles left open at a bounded wait, freshness bound to their own cycle."""
-    pulls = api(f"repos/{REPO}/pulls?state=open&per_page=100") or []
+def rebuild(pr, head_sha):
+    """Rebuild PR branch on current main with head commit contents."""
+    files = api(f"repos/{REPO}/pulls/{pr['number']}/files?per_page=100") or []
+    if len(files) >= 100:
+        raise SystemExit(f"PR #{pr['number']}: 100 files or more")
+    for item in files:
+        if item["filename"] not in ALLOWED:
+            raise SystemExit(f"PR #{pr['number']}: {item['filename']} not in allow-list")
+        if item["status"] not in {"added", "modified"}:
+            raise SystemExit(f"PR #{pr['number']}: {item['filename']} status is {item['status']}")
+    contents = {}
+    for item in files:
+        data = api(f"repos/{REPO}/contents/{item['filename']}?ref={head_sha}")
+        if data.get("encoding") != "base64":
+            raise SystemExit(f"PR #{pr['number']}: {item['filename']} encoding is not base64")
+        contents[item["filename"]] = base64.b64decode(data["content"])
+    base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
+    branch = pr["head"]["ref"]
+    api(f"repos/{REPO}/git/refs/heads/{branch}", "--method", "PATCH", "-f", f"sha={base}", "-F", "force=true")
+    signed_commit(branch, base, pr["title"], contents)
+    print(f"PR #{pr['number']} rebuilt on main {base[:12]}")
+
+
+def leftover_prs(pulls):
+    """Filter open pull requests to valid leftover cycle PR candidates."""
     candidates = []
     for pr in pulls:
         if pr.get("user", {}).get("login") != BOT:
@@ -213,6 +236,13 @@ def resume():
         match = LEFTOVER.match(head_ref)
         if match:
             candidates.append((pr, match.group(1)))
+    return candidates
+
+
+def resume():
+    """Settle the pull requests earlier cycles left open at a bounded wait, freshness bound to their own cycle."""
+    pulls = api(f"repos/{REPO}/pulls?state=open&per_page=100") or []
+    candidates = leftover_prs(pulls)
     if not candidates:
         print("no leftover cycle PR")
         return
@@ -222,6 +252,9 @@ def resume():
         run = api(f"repos/{REPO}/actions/runs/{cycle_id}")
         if not run["path"].endswith(".github/workflows/cycle.yml") or run["repository"]["full_name"] != REPO:
             raise SystemExit(f"PR #{pr['number']}: run {cycle_id} is not a cycle.yml run in {REPO}")
+        view = json.loads(gh("pr", "view", str(pr["number"]), "--json", "mergeStateStatus,headRefOid"))
+        if view.get("mergeStateStatus") in ("BEHIND", "DIRTY"):
+            rebuild(pr, view["headRefOid"])
         # created_at is the earlier cycle's first start; a re-run moves run_started_at past its commit.
         started = run["created_at"]
         approve_and_wait(pr["number"], started=started)
