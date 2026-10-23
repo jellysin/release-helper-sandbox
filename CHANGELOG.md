@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.52](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.51...v0.1.52) (2026-10-23)
+
+
+### Bug Fixes
+
+* **cycle:** finish CI waits on job states and resume left-over PRs ([#163](https://github.com/jellysin/release-helper-sandbox/issues/163)) ([6bdd421](https://github.com/jellysin/release-helper-sandbox/commit/6bdd421ffa549cc5c51c1a2399b4443d84c8b14f))
+* **cycle:** rebuild a left-over cycle PR that main moved past ([#165](https://github.com/jellysin/release-helper-sandbox/issues/165)) ([8c09d9d](https://github.com/jellysin/release-helper-sandbox/commit/8c09d9da0cf539d3465ead66f33c8cbe737c6d6a))
+* **cycle:** wait for the rebuilt head and name an unapproved CI run ([#166](https://github.com/jellysin/release-helper-sandbox/issues/166)) ([0be5bfc](https://github.com/jellysin/release-helper-sandbox/commit/0be5bfca3b5720e6f5405d893cecb4805bf7d3d2))
+* release cycle of release-helper c0f6e472f9ac4da2ccdd10afd0a7a167d938b566 ([#162](https://github.com/jellysin/release-helper-sandbox/issues/162)) ([39dd357](https://github.com/jellysin/release-helper-sandbox/commit/39dd357f3da22c1279a39ac6ea2fd591fcd91245))
+* release cycle of release-helper c0f6e472f9ac4da2ccdd10afd0a7a167d938b566 ([#167](https://github.com/jellysin/release-helper-sandbox/issues/167)) ([ae1afcd](https://github.com/jellysin/release-helper-sandbox/commit/ae1afcd48be1c327d9e7c7656f364fc2dcd68a50))
+* release cycle of release-helper c0f6e472f9ac4da2ccdd10afd0a7a167d938b566 ([#168](https://github.com/jellysin/release-helper-sandbox/issues/168)) ([dd126b3](https://github.com/jellysin/release-helper-sandbox/commit/dd126b397340a1d3ad7cb2ad9ef8627e5de6a691))
+
 ## [0.1.51](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.50...v0.1.51) (2026-10-22)
 
 
