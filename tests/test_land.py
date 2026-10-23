@@ -11,6 +11,7 @@ from pathlib import Path
 
 # land.py reads GITHUB_REPOSITORY at import; set os.environ before import
 os.environ.setdefault("GITHUB_REPOSITORY", "jellysin/release-helper-sandbox")
+os.environ.setdefault("CYCLE_STARTED", "2026-10-23T00:00:00Z")
 
 # Load land.py via importlib from path
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / ".github" / "scripts" / "land.py"
@@ -79,10 +80,13 @@ class TestCiState(unittest.TestCase):
 
     def test_action_required_run(self):
         run = {"status": "completed", "conclusion": "action_required"}
-        self.assertEqual(land.ci_state(run, []), "pending")
+        self.assertEqual(land.ci_state(run, []), "action_required")
 
         run_waiting = {"status": "action_required", "conclusion": "action_required"}
-        self.assertEqual(land.ci_state(run_waiting, []), "pending")
+        self.assertEqual(land.ci_state(run_waiting, []), "action_required")
+
+        run_queued = {"status": "queued", "conclusion": None}
+        self.assertEqual(land.ci_state(run_queued, []), "pending")
 
     def test_refuse_100_jobs_as_failure(self):
         run = {"status": "in_progress", "conclusion": None}
@@ -204,7 +208,7 @@ class TestResumeRebuild(unittest.TestCase):
             self.assertEqual(inp["fileChanges"]["additions"], [
                 {"path": "version.txt", "contents": base64.b64encode(content_bytes).decode()}
             ])
-            mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z")
+            mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha="new_commit_sha")
             mock_merge.assert_called_once_with(162)
 
     def test_file_outside_allowed_raises_system_exit(self):
@@ -285,8 +289,95 @@ class TestResumeRebuild(unittest.TestCase):
             land.resume()
 
             mock_rebuild.assert_not_called()
-            mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z")
+            mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha=None)
             mock_merge.assert_called_once_with(162)
+
+    def test_rebuild_returns_signed_commit_oid(self):
+        pr = make_candidate_pr(title="feat: rebuild test")
+        files = [{"filename": "version.txt", "status": "modified"}]
+        content_obj = {"encoding": "base64", "content": base64.b64encode(b"1.0.1").decode()}
+        main_ref = {"object": {"sha": "main_head_sha"}}
+
+        def fake_api(path, *args):
+            if "pulls/162/files" in path:
+                return files
+            if "contents/version.txt" in path:
+                return content_obj
+            if "git/ref/heads/main" in path:
+                return main_ref
+            if "git/refs/heads/cycle/123-change" in path:
+                return {}
+            raise AssertionError(f"unexpected api call: {path}")
+
+        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
+             unittest.mock.patch.object(land, "signed_commit", return_value="rebuilt_commit_oid") as mock_commit:
+            result = land.rebuild(pr, "old_head_sha")
+            self.assertEqual(result, "rebuilt_commit_oid")
+            mock_commit.assert_called_once()
+
+    def test_approve_and_wait_with_lagging_sha_uses_new_sha(self):
+        stale_pr = {"number": 162, "head": {"sha": "stalesha"}}
+        new_pr = {"number": 162, "head": {"sha": "newsha"}}
+        pull_responses = [stale_pr, new_pr]
+
+        def fake_api(path, *args):
+            if path == f"repos/{land.REPO}/pulls/162":
+                return pull_responses.pop(0)
+            raise AssertionError(f"unexpected api call: {path}")
+
+        run = {"id": 42, "status": "in_progress", "conclusion": "action_required", "html_url": "http://run/42"}
+        jobs = [{"name": "test", "status": "completed", "conclusion": "success"}]
+
+        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
+             unittest.mock.patch.object(land.time, "sleep") as mock_sleep, \
+             unittest.mock.patch.object(land, "gh") as mock_gh, \
+             unittest.mock.patch.object(land, "refusal", return_value=None) as mock_refusal, \
+             unittest.mock.patch.object(land, "pull_request_runs", return_value=[run]) as mock_runs, \
+             unittest.mock.patch.object(land, "run_jobs", return_value=jobs):
+            land.approve_and_wait(162, started="2026-10-23T00:00:00Z", sha="newsha")
+
+            mock_sleep.assert_called_with(land.PAUSE)
+            mock_refusal.assert_called_once_with(new_pr, "2026-10-23T00:00:00Z")
+            mock_runs.assert_called_with("newsha")
+            for c in mock_runs.call_args_list:
+                self.assertEqual(c[0][0], "newsha")
+            mock_gh.assert_called_once_with(
+                "api", "--method", "POST", f"repos/{land.REPO}/actions/runs/42/approve"
+            )
+
+    def test_approve_and_wait_sha_never_appears_raises_system_exit(self):
+        stale_pr = {"number": 162, "head": {"sha": "stalesha"}}
+        with unittest.mock.patch.object(land, "POLLS", 3), \
+             unittest.mock.patch.object(land, "api", return_value=stale_pr) as mock_api, \
+             unittest.mock.patch.object(land.time, "sleep") as mock_sleep:
+            with self.assertRaises(SystemExit) as ctx:
+                land.approve_and_wait(162, started="2026-10-23T00:00:00Z", sha="newsha")
+            self.assertIn("PR #162: head is stalesha, not the rebuilt newsha", str(ctx.exception))
+            self.assertEqual(mock_api.call_count, 3)
+            self.assertEqual(mock_sleep.call_count, 3)
+
+    def _wait(self, run_states):
+        pr = {"number": 7, "head": {"sha": "abc"}}
+        runs = [[dict(state, id=9, html_url="http://run/9")] for state in run_states]
+        with unittest.mock.patch.object(land, "POLLS", 3), \
+             unittest.mock.patch.object(land, "api", return_value=pr), \
+             unittest.mock.patch.object(land.time, "sleep"), \
+             unittest.mock.patch.object(land, "gh"), \
+             unittest.mock.patch.object(land, "refusal", return_value=None), \
+             unittest.mock.patch.object(land, "pull_request_runs", side_effect=runs), \
+             unittest.mock.patch.object(land, "run_jobs", return_value=[]):
+            land.approve_and_wait(7, started="2026-10-23T00:00:00Z")
+
+    def test_approval_that_never_takes_names_action_required(self):
+        waiting = {"status": "completed", "conclusion": "action_required"}
+        with self.assertRaises(SystemExit) as ctx:
+            self._wait([waiting] * 4)
+        self.assertIn("PR #7: CI on abc still action_required, approval did not take", str(ctx.exception))
+
+    def test_approval_lag_then_success(self):
+        waiting = {"status": "completed", "conclusion": "action_required"}
+        done = {"status": "completed", "conclusion": "success"}
+        self._wait([waiting, waiting, done])
 
 
 if __name__ == "__main__":

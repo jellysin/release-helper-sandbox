@@ -89,6 +89,8 @@ def ci_state(run, jobs):
         if not failed:
             return "success"
         return f"failed jobs: {', '.join(failed)}"
+    if run.get("conclusion") == "action_required":
+        return "action_required"
     return "pending"
 
 
@@ -121,11 +123,23 @@ def pull_request_runs(sha):
     return runs["workflow_runs"]
 
 
-def approve_and_wait(number, started=None):
+def wait_for_head(number, sha):
+    """Wait until the PR's head ref matches sha, bounded; return the PR."""
+    seen = None
+    for _ in range(POLLS):
+        pr = api(f"repos/{REPO}/pulls/{number}")
+        seen = pr["head"]["sha"]
+        if seen == sha:
+            return pr
+        time.sleep(PAUSE)
+    raise SystemExit(f"PR #{number}: head is {seen}, not the rebuilt {sha}")
+
+
+def approve_and_wait(number, started=None, sha=None):
     """Approve the PR's waiting pull_request CI run when the PR qualifies, and wait for it to succeed."""
     if started is None:
         started = os.environ["CYCLE_STARTED"]
-    pr = api(f"repos/{REPO}/pulls/{number}")
+    pr = wait_for_head(number, sha) if sha is not None else api(f"repos/{REPO}/pulls/{number}")
     sha = pr["head"]["sha"]
     reason = refusal(pr, started)
     if reason is not None:
@@ -141,6 +155,7 @@ def approve_and_wait(number, started=None):
         if run["conclusion"] == "action_required":
             gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
             print(f"PR #{number}: approved CI run {run['html_url']}")
+    state = "pending"
     for _ in range(POLLS):
         run = pull_request_runs(sha)[0]
         jobs = run_jobs(run["id"])
@@ -150,9 +165,11 @@ def approve_and_wait(number, started=None):
             tag = " (jobs complete, run status lagging)" if lagging else ""
             print(f"PR #{number}: CI success{tag} {run['html_url']}")
             return
-        if state != "pending":
+        if state not in ("pending", "action_required"):
             raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
         time.sleep(PAUSE)
+    if state == "action_required":
+        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
     raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
 
 
@@ -219,8 +236,9 @@ def rebuild(pr, head_sha):
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     branch = pr["head"]["ref"]
     api(f"repos/{REPO}/git/refs/heads/{branch}", "--method", "PATCH", "-f", f"sha={base}", "-F", "force=true")
-    signed_commit(branch, base, pr["title"], contents)
+    oid = signed_commit(branch, base, pr["title"], contents)
     print(f"PR #{pr['number']} rebuilt on main {base[:12]}")
+    return oid
 
 
 def leftover_prs(pulls):
@@ -253,11 +271,10 @@ def resume():
         if not run["path"].endswith(".github/workflows/cycle.yml") or run["repository"]["full_name"] != REPO:
             raise SystemExit(f"PR #{pr['number']}: run {cycle_id} is not a cycle.yml run in {REPO}")
         view = json.loads(gh("pr", "view", str(pr["number"]), "--json", "mergeStateStatus,headRefOid"))
-        if view.get("mergeStateStatus") in ("BEHIND", "DIRTY"):
-            rebuild(pr, view["headRefOid"])
+        head = rebuild(pr, view["headRefOid"]) if view.get("mergeStateStatus") in ("BEHIND", "DIRTY") else None
         # created_at is the earlier cycle's first start; a re-run moves run_started_at past its commit.
         started = run["created_at"]
-        approve_and_wait(pr["number"], started=started)
+        approve_and_wait(pr["number"], started=started, sha=head)
         merged = merge_when_clean(pr["number"])
         print(f"PR #{pr['number']} resumed from cycle {cycle_id}, merged as {merged}")
 
