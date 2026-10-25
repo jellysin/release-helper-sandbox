@@ -8,6 +8,14 @@
     "owner": "JellySin",
     "versions": [
       {
+        "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.61",
+        "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
+        "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.61/release-helper-sandbox-0.1.61.zip",
+        "targetAbi": "12.0.0.0",
+        "timestamp": "2026-10-25T06:22:39Z",
+        "version": "0.1.61.0"
+      },
+      {
         "changelog": "https://github.com/jellysin/release-helper-sandbox/releases/tag/v0.1.60",
         "checksum": "71adb5fb72b32f35d0a9a34013b95dc3",
         "sourceUrl": "https://github.com/jellysin/release-helper-sandbox/releases/download/v0.1.60/release-helper-sandbox-0.1.60.zip",
