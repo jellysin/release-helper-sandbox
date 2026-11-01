@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>plurano/horistes",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "dependencyDashboard": true,
+  "rangeStrategy": "pin",
+  "prConcurrentLimit": 5,
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "groupName": null
+    },
+    {
+      "description": "praetor-managed files: praetorctl adopt ships their updates and praetorctl audit locks them byte for byte",
+      "matchFileNames": [
+        ".devcontainer/devcontainer.json",
+        ".devcontainer/Dockerfile.praetor"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Release-cycle test data: the cycle writes these files and the catalog and plugin entries name test releases, so no manager proposes changes to them.",
+      "matchFileNames": [
+        "catalog/**",
+        "plugin/**",
+        "cycle/**",
+        "version.txt",
+        ".release-please-manifest.json",
+        "CHANGELOG.md"
+      ],
+      "enabled": false
+    }
+  ]
+}
