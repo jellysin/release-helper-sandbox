@@ -94,35 +94,70 @@ def _validate_branch_glob(branch: str) -> None:
             raise ValueError(f"Glob pattern in branches unsupported: {branch}")
 
 
-def _split_flow_sequence(raw: str) -> list[str]:
-    """Split comma-separated flow sequence outside quotes, stripping quotes."""
-    items: list[str] = []
-    current: list[str] = []
-    quote_char: str | None = None
-    for ch in raw:
-        if quote_char is not None:
-            if ch == quote_char:
-                quote_char = None
-            current.append(ch)
-        elif ch in ("'", '"'):
-            quote_char = ch
-            current.append(ch)
-        elif ch == ",":
-            token = "".join(current).strip().strip("'\"")
-            if token:
-                items.append(token)
-            current = []
-        else:
-            current.append(ch)
-    if quote_char is not None:
+REQUIRED_PR_TYPES = frozenset({"opened", "synchronize", "reopened"})
+PR_EVENT_CHILD_KEYS = frozenset({"branches", "types"})
+_PLAIN_FLOW_RE = re.compile(r"^[A-Za-z0-9_.()/ -]+$")
+
+
+def _skip_ws(raw: str, i: int, n: int) -> int:
+    while i < n and raw[i].isspace():
+        i += 1
+    return i
+
+
+def _parse_flow_quoted(raw: str, i: int, n: int) -> tuple[str, int]:
+    quote_char = raw[i]
+    end_quote = raw.find(quote_char, i + 1)
+    if end_quote == -1:
         raise ValueError(f"Unterminated quote in flow sequence: {raw}")
-    token = "".join(current).strip().strip("'\"")
-    if token:
-        items.append(token)
+    content = raw[i + 1 : end_quote]
+    j = _skip_ws(raw, end_quote + 1, n)
+    if j < n and raw[j] != ",":
+        raise ValueError(f"Trailing text after closing quote in flow sequence: {raw}")
+    return content, j
+
+
+def _parse_flow_plain(raw: str, i: int, n: int) -> tuple[str, int]:
+    comma_idx = raw.find(",", i)
+    end_idx = n if comma_idx == -1 else comma_idx
+    token = raw[i:end_idx].strip()
+    if "'" in token or '"' in token:
+        raise ValueError(f"Quote inside plain scalar in flow sequence: {raw}")
+    if not _PLAIN_FLOW_RE.match(token):
+        raise ValueError(f"Invalid characters in plain scalar: {token}")
+    return token, end_idx
+
+
+def _split_flow_sequence(raw: str) -> list[str]:
+    """Split comma-separated flow sequence according to allow-list rules."""
+    if not raw.strip():
+        return []
+    items: list[str] = []
+    i = 0
+    n = len(raw)
+    expect_item = True
+    while i < n:
+        i = _skip_ws(raw, i, n)
+        if i >= n:
+            break
+        if raw[i] == ",":
+            raise ValueError(f"Empty item in flow sequence: {raw}")
+        if raw[i] in ("'", '"'):
+            item, i = _parse_flow_quoted(raw, i, n)
+        else:
+            item, i = _parse_flow_plain(raw, i, n)
+        items.append(item)
+        expect_item = False
+        i = _skip_ws(raw, i, n)
+        if i < n and raw[i] == ",":
+            i += 1
+            expect_item = True
+    if expect_item:
+        raise ValueError(f"Empty item at end of flow sequence: {raw}")
     return items
 
 
-def _parse_branches_flow(rest: str) -> list[str]:
+def _parse_list_flow(rest: str) -> list[str]:
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
         return _split_flow_sequence(clean[1:-1])
@@ -131,7 +166,7 @@ def _parse_branches_flow(rest: str) -> list[str]:
     return []
 
 
-def _parse_branches_block(
+def _parse_list_block(
     lines: list[str], start_idx: int, indent: int
 ) -> tuple[list[str], int]:
     items: list[str] = []
@@ -154,31 +189,51 @@ def _parse_branches_block(
     return items, j
 
 
+def _parse_list_entry(
+    lines: list[str], idx: int, rest: str, indent: int
+) -> tuple[list[str], int]:
+    clean_rest = rest.split("#", 1)[0].strip()
+    if clean_rest:
+        return _parse_list_flow(clean_rest), idx + 1
+    return _parse_list_block(lines, idx + 1, indent)
+
+
 def _parse_branches_entry(
     lines: list[str], idx: int, rest: str, indent: int
 ) -> tuple[list[str], int]:
-    if rest:
-        branches = _parse_branches_flow(rest)
-        next_idx = idx + 1
-    else:
-        branches, next_idx = _parse_branches_block(lines, idx + 1, indent)
+    branches, next_idx = _parse_list_entry(lines, idx, rest, indent)
     for b in branches:
         _validate_branch_glob(b)
     return branches, next_idx
+
+
+def _parse_types_entry(
+    lines: list[str], idx: int, rest: str, indent: int
+) -> tuple[list[str], int]:
+    types_list, next_idx = _parse_list_entry(lines, idx, rest, indent)
+    if not REQUIRED_PR_TYPES.issubset(types_list):
+        missing = sorted(REQUIRED_PR_TYPES - set(types_list))
+        raise ValueError(
+            f"types under PR event missing required types {missing} at line {idx + 1}"
+        )
+    return types_list, next_idx
 
 
 def _handle_pr_event_child(
     lines: list[str], j: int, stripped: str, indent: int
 ) -> tuple[bool | None, int]:
     if ":" not in stripped:
-        return None, j + 1
+        raise ValueError(f"Unsupported entry in PR event at line {j + 1}: {stripped}")
     key = stripped.split(":", 1)[0].strip().strip("'\"")
-    if key in ("branches-ignore", "paths", "paths-ignore"):
+    if key not in PR_EVENT_CHILD_KEYS:
         raise ValueError(f"{key} unsupported in PR event at line {j + 1}")
+    rest = stripped.split(":", 1)[1].strip()
     if key == "branches":
-        rest = stripped.split(":", 1)[1].strip()
         branches, next_j = _parse_branches_entry(lines, j, rest, indent)
         return ("main" in branches), next_j
+    if key == "types":
+        _, next_j = _parse_types_entry(lines, j, rest, indent)
+        return None, next_j
     return None, j + 1
 
 

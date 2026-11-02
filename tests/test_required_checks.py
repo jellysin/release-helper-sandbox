@@ -14,6 +14,7 @@ from required_checks_parser import (
     WORKFLOWS_DIR,
     JobDef,
     MatrixSpan,
+    _split_flow_sequence,
     get_all_reported_contexts,
     get_job_reported_contexts,
     get_required_contexts,
@@ -410,6 +411,117 @@ class TestRequiredChecks(unittest.TestCase):
         )
         self.assertFalse(wf.triggers_pr)
 
+    def test_pr_unsupported_child_keys_raise(self):
+        """pull_request child tags: and unknown key foo: raise ValueError."""
+        wf_tags = (
+            "name: Tags\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    tags: [v1]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_tags)
+
+        wf_foo = (
+            "name: Foo\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    foo: bar\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_foo)
+
+    def test_pr_types_validation(self):
+        """PR event types validation for flow and block lists."""
+        wf_labeled = (
+            "name: Labeled Only\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    types: [labeled]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_labeled)
+
+        wf_flow_all = (
+            "name: Valid Flow Types\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    types: [opened, synchronize, reopened, labeled]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        wf = parse_workflow_string(wf_flow_all)
+        self.assertTrue(wf.triggers_pr)
+
+        wf_block_all = (
+            "name: Valid Block Types\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    types:\n"
+            "      - opened\n"
+            "      - synchronize\n"
+            "      - reopened\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        wf_block = parse_workflow_string(wf_block_all)
+        self.assertTrue(wf_block.triggers_pr)
+
+        wf_block_missing = (
+            "name: Block Missing Reopened\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    types:\n"
+            "      - opened\n"
+            "      - synchronize\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_block_missing)
+
+    def test_flow_sequence_allowlist_and_edge_cases(self):
+        """Flow sequence parses allowed shapes and rejects invalid shapes."""
+        with self.assertRaises(ValueError):
+            _split_flow_sequence("it's, main")
+
+        with self.assertRaises(ValueError):
+            _split_flow_sequence("'it''s'")
+
+        self.assertEqual(_split_flow_sequence('"a,b", c'), ["a,b", "c"])
+
+        with self.assertRaises(ValueError):
+            _split_flow_sequence('"a" x')
+
+        with self.assertRaises(ValueError):
+            _split_flow_sequence("a,,b")
+
+
+    def test_pr_event_non_key_entry_raises(self):
+        """A list item directly under pull_request is not an allowed child key."""
+        yaml_content = (
+            "name: Stray\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    - main\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(yaml_content)
 
 if __name__ == "__main__":
     unittest.main()
