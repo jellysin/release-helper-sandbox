@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.97](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.96...v0.1.97) (2026-11-02)
+
+
+### Bug Fixes
+
+* approve and wait for the CodeQL run in the release cycle ([#317](https://github.com/jellysin/release-helper-sandbox/issues/317)) ([4c47c2a](https://github.com/jellysin/release-helper-sandbox/commit/4c47c2a75eb49420516151721180f39f2a7d5c9f))
+* release cycle of release-helper 007c07f9ee60935b0dff357657280794b5072765 ([#316](https://github.com/jellysin/release-helper-sandbox/issues/316)) ([9a5e99c](https://github.com/jellysin/release-helper-sandbox/commit/9a5e99c15653c8ee1cf476697fbfa85017a28eb5))
+* release cycle of release-helper b5c288a7cda52ba36c81e61e46866d707d174f94 ([#319](https://github.com/jellysin/release-helper-sandbox/issues/319)) ([b415e2a](https://github.com/jellysin/release-helper-sandbox/commit/b415e2a8fd52840ea9df4fb74bd55d7610d1c695))
+
 ## [0.1.96](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.95...v0.1.96) (2026-11-02)
 
 
