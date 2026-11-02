@@ -6,11 +6,12 @@
     land.py merge NUMBER                  let CI run on an open release PR and squash-merge it when CLEAN
     land.py resume                        resume and settle leftover cycle PRs that an earlier cycle left open
 
-A pull request the job token opens starts a pull_request CI run that waits for approval
+A pull request the job token opens starts pull_request CI runs that wait for approval
 (action_required), and only pull_request runs count as the PR's required checks. This script approves
-such a run, fail closed, only when the PR's author is github-actions[bot], its head is in this
-repository, its head commit was made in this cycle (CYCLE_STARTED) and every changed path is on the
-cycle's allow-list; anything else is reported and left waiting. A refused approval stops the cycle.
+such runs, fail closed, for the allow-listed workflows only when the PR's author is
+github-actions[bot], its head is in this repository, its head commit was made in this cycle
+(CYCLE_STARTED) and every changed path is on the cycle's allow-list; anything else is reported and
+left waiting. A refused approval stops the cycle.
 
 Standard library and gh only, with the job's token. Every wait is bounded; any other state fails.
 """
@@ -25,7 +26,12 @@ import time
 from pathlib import Path
 
 REPO = os.environ["GITHUB_REPOSITORY"]
-CI_WORKFLOW = "ci.yml"
+# The workflows whose pull_request runs report required checks; the cycle approves only these
+# (allow-list, fail closed).
+PR_WORKFLOWS = (
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+)
 BOT = "github-actions[bot]"
 # Every path a cycle pull request may change: the record of the run, the release PR's version files
 # and the catalog. A pull request touching any other path is not approved.
@@ -117,9 +123,17 @@ def refusal(pr, started):
 
 
 def pull_request_runs(sha):
-    """Fetch recent pull-request CI workflow runs for the specified commit SHA."""
-    runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?event=pull_request&head_sha={sha}&per_page=5")
-    return runs["workflow_runs"]
+    """Return the newest pull_request run of each allow-listed workflow for the commit, in PR_WORKFLOWS order."""
+    data = api(f"repos/{REPO}/actions/runs?event=pull_request&head_sha={sha}&per_page=20")
+    if data["total_count"] >= 20:
+        raise SystemExit(f"commit {sha} has {data['total_count']} runs, more than one page")
+    best_by_path = {}
+    for run in data["workflow_runs"]:
+        path = run.get("path")
+        if path in PR_WORKFLOWS:
+            if path not in best_by_path or run["id"] > best_by_path[path]["id"]:
+                best_by_path[path] = run
+    return [best_by_path[path] for path in PR_WORKFLOWS if path in best_by_path]
 
 
 def wait_for_head(number, sha):
@@ -134,28 +148,49 @@ def wait_for_head(number, sha):
     raise SystemExit(f"PR #{number}: head is {seen}, not the rebuilt {sha}")
 
 
-def wait_for_run(number, sha):
-    """Wait for the PR's CI run to succeed, bounded."""
-    state = "pending"
-    for _ in range(POLLS):
-        runs = pull_request_runs(sha)
-        if not runs:
-            time.sleep(PAUSE)
-            continue
-        run = runs[0]
+def _evaluate_runs(runs, number):
+    """Evaluate jobs and CI state for each run; fail immediately on unhandled state."""
+    states = {}
+    for run in runs:
         jobs = run_jobs(run["id"])
         state = ci_state(run, jobs)
-        if state == "success":
-            lagging = run.get("status") != "completed"
-            tag = " (jobs complete, run status lagging)" if lagging else ""
-            print(f"PR #{number}: CI success{tag} {run['html_url']}")
-            return
-        if state not in ("pending", "action_required"):
+        if state not in ("pending", "action_required", "success"):
             raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
+        states[run["path"]] = state
+    return states
+
+
+def _timeout(number, sha, runs_by_path, run_states):
+    """Raise SystemExit describing which workflow runs failed to complete in time."""
+    not_done = []
+    for path in PR_WORKFLOWS:
+        run = runs_by_path.get(path)
+        if run is None:
+            not_done.append(path)
+        elif run_states.get(path) != "success":
+            not_done.append(run.get("html_url", path))
+    if any(run_states.get(path) == "action_required" for path in PR_WORKFLOWS):
+        raise SystemExit(
+            f"PR #{number}: CI on {sha} still action_required, approval did not take: {', '.join(not_done)}"
+        )
+    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time: {', '.join(not_done)}")
+
+
+def wait_for_run(number, sha):
+    """Wait for every allow-listed workflow's pull_request run to succeed, bounded."""
+    runs_by_path, run_states = {}, {}
+    for _ in range(POLLS):
+        runs = pull_request_runs(sha)
+        runs_by_path = {run["path"]: run for run in runs}
+        run_states = _evaluate_runs(runs, number)
+        if len(runs) == len(PR_WORKFLOWS) and all(run_states.get(p) == "success" for p in PR_WORKFLOWS):
+            for run in runs:
+                lagging = run.get("status") != "completed"
+                tag = " (jobs complete, run status lagging)" if lagging else ""
+                print(f"PR #{number}: CI success{tag} {run['html_url']}")
+            return
         time.sleep(PAUSE)
-    if state == "action_required":
-        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
-    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
+    _timeout(number, sha, runs_by_path, run_states)
 
 
 def approve_and_wait(number, started=None, sha=None):
@@ -167,15 +202,18 @@ def approve_and_wait(number, started=None, sha=None):
     reason = refusal(pr, started)
     if reason is not None:
         raise SystemExit(f"PR #{number}: CI not approved, left waiting: {reason}")
+    runs = []
     for _ in range(POLLS):
         runs = pull_request_runs(sha)
-        if runs:
+        present = {run.get("path") for run in runs}
+        if all(path in present for path in PR_WORKFLOWS):
             break
         time.sleep(PAUSE)
     else:
-        raise SystemExit(f"PR #{number}: no pull_request CI run appeared for {sha}")
+        missing = [path for path in PR_WORKFLOWS if path not in {run.get("path") for run in runs}]
+        raise SystemExit(f"PR #{number}: no pull_request CI run appeared for {sha}: {', '.join(missing)}")
     for run in runs:
-        if run["conclusion"] == "action_required":
+        if run.get("conclusion") == "action_required":
             gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
             print(f"PR #{number}: approved CI run {run['html_url']}")
     wait_for_run(number, sha)
