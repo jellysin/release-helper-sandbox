@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import sys
 import unittest
 import unittest.mock
@@ -762,6 +763,51 @@ class TestApproveBothRuns(unittest.TestCase):
             land.approve_and_wait(88, started="2026-10-23T00:00:00Z")
             mock_gh.assert_not_called()
             mock_wait.assert_called_once_with(88, "sha88")
+
+
+class TestCycleJobTimeout(unittest.TestCase):
+    """Verify cycle.yml job timeout accommodates worst-case land.py waits and step headroom."""
+
+    def test_cycle_job_timeout_accommodates_worst_case_waits(self):
+        """Parse cycle.yml timeout-minutes under cycle job and verify bounds."""
+        workflow_path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "cycle.yml"
+        content = workflow_path.read_text(encoding="utf-8")
+        match = re.search(r"^\s*cycle:.*?^\s*timeout-minutes:\s*(\d+)", content, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, "timeout-minutes under cycle job not found in cycle.yml")
+        timeout_minutes = int(match.group(1))
+        self.assertTrue(
+            timeout_minutes * 60 >= land.WORST_CASE_SECONDS + 30 * 60 and timeout_minutes <= 360,
+            f"cycle job timeout {timeout_minutes}m must satisfy N*60 >= {land.WORST_CASE_SECONDS + 30 * 60} and N <= 360",
+        )
+        self.assertGreaterEqual(timeout_minutes * 60, land.WORST_CASE_SECONDS + 30 * 60)
+        self.assertLessEqual(timeout_minutes, 360)
+
+    def test_worst_case_seconds_grows_when_run_polls_grows(self):
+        """Verify worst_case_seconds increases when run_polls grows."""
+        base = land.worst_case_seconds(land.POLLS, land.RUN_POLLS, land.PAUSE, land.MAX_LEFTOVERS)
+        self.assertEqual(base, land.WORST_CASE_SECONDS)
+        larger = land.worst_case_seconds(land.POLLS, land.RUN_POLLS + 1, land.PAUSE, land.MAX_LEFTOVERS)
+        self.assertGreater(larger, base)
+
+    def test_worst_case_seconds_counts_every_leftover(self):
+        """Verify each leftover PR resume may settle adds one full rebuild wait."""
+        one = land.worst_case_seconds(land.POLLS, land.RUN_POLLS, land.PAUSE, 1)
+        two = land.worst_case_seconds(land.POLLS, land.RUN_POLLS, land.PAUSE, 2)
+        self.assertEqual(two - one, (3 * land.POLLS + land.RUN_POLLS) * land.PAUSE)
+
+    def test_resume_refuses_more_than_max_leftovers(self):
+        """Verify resume stops before any wait when more leftovers exist than the bound allows."""
+        pulls = [{"number": n} for n in range(land.MAX_LEFTOVERS + 1)]
+        candidates = [(pr, str(n)) for n, pr in enumerate(pulls)]
+        with (
+            unittest.mock.patch.object(land, "api", return_value=pulls),
+            unittest.mock.patch.object(land, "leftover_prs", return_value=candidates),
+            unittest.mock.patch.object(land, "approve_and_wait") as wait,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                land.resume()
+        self.assertIn(f"more than {land.MAX_LEFTOVERS} leftover", str(ctx.exception))
+        wait.assert_not_called()
 
 
 if __name__ == "__main__":

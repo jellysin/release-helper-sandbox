@@ -44,7 +44,22 @@ ALLOWED = {
 }
 POLLS, PAUSE = 60, 10  # at most ten minutes for each wait
 RUN_POLLS = 120  # twenty minutes: codeql.yml's timeout-minutes
+# Leftover cycle PRs one resume settles; more stops the cycle. Bounded so the waits fit the job timeout.
+MAX_LEFTOVERS = 2
 LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
+
+
+def worst_case_seconds(polls, run_polls, pause, leftovers):
+    """Return the longest time land.py can wait in one cycle job: resume, land, merge, land.
+
+    resume settles at most `leftovers` PRs, each wait_for_head + runs appear + wait_for_run +
+    merge_when_clean = (3 * polls + run_polls) * pause; land, merge and the second land each wait
+    runs appear + wait_for_run + merge_when_clean = (2 * polls + run_polls) * pause.
+    """
+    return (leftovers * (3 * polls + run_polls) + 3 * (2 * polls + run_polls)) * pause
+
+
+WORST_CASE_SECONDS = worst_case_seconds(POLLS, RUN_POLLS, PAUSE, MAX_LEFTOVERS)
 
 
 def gh(*arguments, data=None):
@@ -315,8 +330,8 @@ def resume():
     if not candidates:
         print("no leftover cycle PR")
         return
-    if len(candidates) > 5:
-        raise SystemExit(f"more than 5 leftover cycle PRs ({len(candidates)})")
+    if len(candidates) > MAX_LEFTOVERS:
+        raise SystemExit(f"more than {MAX_LEFTOVERS} leftover cycle PRs ({len(candidates)})")
     for pr, cycle_id in candidates:
         run = api(f"repos/{REPO}/actions/runs/{cycle_id}")
         if not run["path"].endswith(".github/workflows/cycle.yml") or run["repository"]["full_name"] != REPO:
