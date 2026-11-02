@@ -37,17 +37,25 @@ register:
 exceptions:
   - rule: HISS-11
     path: .github/workflows/release.yml
-    reason: adoption found the release workflows short of the declared supply chain (SLSA Build Level 3 declared, Level 2 measured; enforce_cosign without a cosign signing step; require_sbom without an SBOM step); raise them as docs/guides/releasing.md in Praetor describes, then remove this entry
+    category: A
+    entered: "2026-10-13"
+    reason: "category A (90 days from adoption): adoption found the release workflows short of the declared supply chain (SLSA Build Level 3 declared, Level 2 measured; enforce_cosign without a cosign signing step; require_sbom without an SBOM step); raise them as docs/guides/releasing.md in Praetor describes, then remove this entry"
     expires: "2027-01-11"
   - rule: declared-linters
     tool: gitleaks
-    reason: adoption scaffolds no CI job for gitleaks declared by facet "security:high"; run it in a workflow, or remove this entry
+    category: A
+    entered: "2026-10-13"
+    reason: "category A (90 days from adoption): adoption scaffolds no CI job for gitleaks declared by facet \"security:high\"; run it in a workflow, or remove this entry"
     expires: "2027-01-11"
   - rule: declared-linters
     tool: semgrep
-    reason: adoption scaffolds no CI job for semgrep declared by profile "template-seed", facet "agent:sandboxed"; run it in a workflow, or remove this entry
+    category: A
+    entered: "2026-10-13"
+    reason: "category A (90 days from adoption): adoption scaffolds no CI job for semgrep declared by profile \"template-seed\", facet \"agent:sandboxed\"; run it in a workflow, or remove this entry"
     expires: "2027-01-11"
   - rule: declared-linters
     tool: trivy
-    reason: adoption scaffolds no CI job for trivy declared by facet "security:high"; run it in a workflow, or remove this entry
+    category: A
+    entered: "2026-10-13"
+    reason: "category A (90 days from adoption): adoption scaffolds no CI job for trivy declared by facet \"security:high\"; run it in a workflow, or remove this entry"
     expires: "2027-01-11"
