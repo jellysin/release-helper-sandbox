@@ -1,3 +1,4 @@
+import os
 """Unit tests for .github/scripts/land.py."""
 
 import base64
