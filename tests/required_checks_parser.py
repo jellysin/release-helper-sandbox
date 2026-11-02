@@ -32,6 +32,7 @@ class JobDef:
     matrix: dict[str, MatrixSpan] = None
 
     def __post_init__(self) -> None:
+        """Initialize empty matrix mapping when omitted."""
         if self.matrix is None:
             self.matrix = {}
 
@@ -70,6 +71,7 @@ def parse_job_name(raw_val: str) -> str:
 
 
 def _parse_inline_trigger(rest: str, pr_events: set[str]) -> bool:
+    """Return whether inline trigger matches pull request event names."""
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
         items = {x.strip().strip("'\"") for x in clean[1:-1].split(",") if x.strip()}
@@ -78,6 +80,7 @@ def _parse_inline_trigger(rest: str, pr_events: set[str]) -> bool:
 
 
 def _check_trigger_line(line: str, indent: int, pr_events: set[str]) -> bool:
+    """Return whether an indented event line matches pull request event names."""
     stripped = line.strip()
     if indent == 2 and stripped.startswith("-"):
         item = stripped[1:].strip().split("#", 1)[0].strip().strip("'\"")
@@ -89,6 +92,7 @@ def _check_trigger_line(line: str, indent: int, pr_events: set[str]) -> bool:
 
 
 def _validate_branch_glob(branch: str) -> None:
+    """Raise ValueError when branch name contains glob wildcard characters."""
     for ch in ("*", "?", "[", "!"):
         if ch in branch:
             raise ValueError(f"Glob pattern in branches unsupported: {branch}")
@@ -100,12 +104,14 @@ _PLAIN_FLOW_RE = re.compile(r"^[A-Za-z0-9_.()/ -]+$")
 
 
 def _skip_ws(raw: str, i: int, n: int) -> int:
+    """Return next character index past leading whitespace characters."""
     while i < n and raw[i].isspace():
         i += 1
     return i
 
 
 def _parse_flow_quoted(raw: str, i: int, n: int) -> tuple[str, int]:
+    """Return unquoted text and next offset, or raise ValueError on invalid syntax."""
     quote_char = raw[i]
     end_quote = raw.find(quote_char, i + 1)
     if end_quote == -1:
@@ -118,6 +124,7 @@ def _parse_flow_quoted(raw: str, i: int, n: int) -> tuple[str, int]:
 
 
 def _parse_flow_plain(raw: str, i: int, n: int) -> tuple[str, int]:
+    """Return plain scalar and next offset, or raise ValueError on disallowed characters."""
     comma_idx = raw.find(",", i)
     end_idx = n if comma_idx == -1 else comma_idx
     token = raw[i:end_idx].strip()
@@ -158,6 +165,7 @@ def _split_flow_sequence(raw: str) -> list[str]:
 
 
 def _parse_list_flow(rest: str) -> list[str]:
+    """Return item strings from bracketed flow sequence or single scalar."""
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
         return _split_flow_sequence(clean[1:-1])
@@ -169,6 +177,7 @@ def _parse_list_flow(rest: str) -> list[str]:
 def _parse_list_block(
     lines: list[str], start_idx: int, indent: int
 ) -> tuple[list[str], int]:
+    """Return list items parsed from block sequence lines and next line index."""
     items: list[str] = []
     j = start_idx
     total = len(lines)
@@ -192,6 +201,7 @@ def _parse_list_block(
 def _parse_list_entry(
     lines: list[str], idx: int, rest: str, indent: int
 ) -> tuple[list[str], int]:
+    """Return parsed list items from flow or block syntax and next line index."""
     clean_rest = rest.split("#", 1)[0].strip()
     if clean_rest:
         return _parse_list_flow(clean_rest), idx + 1
@@ -201,6 +211,7 @@ def _parse_list_entry(
 def _parse_branches_entry(
     lines: list[str], idx: int, rest: str, indent: int
 ) -> tuple[list[str], int]:
+    """Return branch names and next line index, or raise ValueError on wildcards."""
     branches, next_idx = _parse_list_entry(lines, idx, rest, indent)
     for b in branches:
         _validate_branch_glob(b)
@@ -210,6 +221,7 @@ def _parse_branches_entry(
 def _parse_types_entry(
     lines: list[str], idx: int, rest: str, indent: int
 ) -> tuple[list[str], int]:
+    """Return event types and next index, or raise ValueError on missing required types."""
     types_list, next_idx = _parse_list_entry(lines, idx, rest, indent)
     if not REQUIRED_PR_TYPES.issubset(types_list):
         missing = sorted(REQUIRED_PR_TYPES - set(types_list))
@@ -222,6 +234,7 @@ def _parse_types_entry(
 def _handle_pr_event_child(
     lines: list[str], j: int, stripped: str, indent: int
 ) -> tuple[bool | None, int]:
+    """Return whether main is targeted and next index, or raise ValueError on unknown keys."""
     if ":" not in stripped:
         raise ValueError(f"Unsupported entry in PR event at line {j + 1}: {stripped}")
     key = stripped.split(":", 1)[0].strip().strip("'\"")
@@ -271,6 +284,7 @@ def _parse_on_body_line(
     pr_events: set[str],
     current_triggers: bool,
 ) -> tuple[bool, int]:
+    """Return updated trigger flag and next index, or raise ValueError on inline mapping."""
     if indent == 2 and stripped.startswith("-"):
         return (
             current_triggers or _check_trigger_line(lines[i], indent, pr_events)
@@ -322,6 +336,7 @@ def parse_on_trigger(lines: list[str]) -> bool:
 def _parse_matrix_flow(
     key: str, rest: str, idx: int, indent: int
 ) -> tuple[MatrixSpan, int]:
+    """Return MatrixSpan and next index, or raise ValueError on malformed values."""
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
         items = _split_flow_sequence(clean[1:-1])
@@ -341,6 +356,7 @@ def _parse_matrix_flow(
 def _parse_matrix_block_items(
     lines: list[str], idx: int, indent: int
 ) -> tuple[list[str], int]:
+    """Return parsed sequence items from matrix block lines and next line index."""
     values: list[str] = []
     j = idx + 1
     total = len(lines)
@@ -364,6 +380,7 @@ def _parse_matrix_block_items(
 def _parse_matrix_key(
     lines: list[str], idx: int, key: str, rest: str, indent: int
 ) -> tuple[MatrixSpan, int]:
+    """Return MatrixSpan and next index, or raise ValueError if block values are empty."""
     if rest:
         return _parse_matrix_flow(key, rest, idx, indent)
     values, end_line = _parse_matrix_block_items(lines, idx, indent)
@@ -413,6 +430,7 @@ def parse_matrix_block(
 def _handle_job_body_line(
     lines: list[str], i: int, current_job: JobDef
 ) -> int:
+    """Return next line index after updating job name or matrix configuration."""
     line = lines[i]
     stripped = line.strip()
     indent = len(line) - len(line.lstrip(" "))
@@ -432,6 +450,7 @@ def _handle_job_line(
     jobs: dict[str, JobDef],
     current: JobDef | None,
 ) -> tuple[JobDef | None, int]:
+    """Return active job definition and next line index after processing a job line."""
     line = lines[i]
     indent = len(line) - len(line.lstrip(" "))
     if indent == 2 and line.startswith("  ") and line.strip().endswith(":"):
