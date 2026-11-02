@@ -27,7 +27,9 @@ jobs:
   cycle:
     name: Release cycle
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # land.py's WORST_CASE_SECONDS (220 minutes) plus 30 for the other steps, so land.py's named
+    # timeouts fire first; tests/test_land.py checks it.
+    timeout-minutes: 250
     permissions:
       contents: write
       actions: write
