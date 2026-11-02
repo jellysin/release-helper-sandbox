@@ -4,15 +4,15 @@ Validates that all required status check contexts declared in
 .github/rulesets/main.json are reported by workflows triggered on pull_request.
 """
 
-from dataclasses import dataclass
 import itertools
 import json
-from pathlib import Path
+import math
 import re
 import shutil
 import tempfile
-from typing import Optional
 import unittest
+from dataclasses import dataclass
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -35,7 +35,7 @@ class JobDef:
     """Representation of a job parsed from a workflow."""
 
     job_id: str
-    name: Optional[str] = None
+    name: str | None = None
     matrix: dict[str, MatrixSpan] = None
 
     def __post_init__(self) -> None:
@@ -56,7 +56,7 @@ def check_unsupported_tokens(lines: list[str]) -> None:
     """Refuse multi-document YAML and anchors/aliases."""
     for idx, raw in enumerate(lines):
         line = raw.strip()
-        if line.startswith("---") or line.startswith("..."):
+        if line.startswith(("---", "...")):
             raise ValueError(f"Multi-document YAML unsupported at line {idx + 1}")
         if re.search(r"(?:^|\s)[&*][A-Za-z0-9_-]+", line):
             raise ValueError(f"YAML anchors/aliases unsupported at line {idx + 1}")
@@ -86,7 +86,7 @@ def _parse_inline_trigger(rest: str, pr_events: set[str]) -> bool:
 
 def _check_trigger_line(line: str, indent: int, pr_events: set[str]) -> bool:
     stripped = line.strip()
-    if stripped.startswith("-"):
+    if indent == 2 and stripped.startswith("-"):
         item = stripped[1:].strip().split("#", 1)[0].strip().strip("'\"")
         return item in pr_events
     if indent == 2 and ":" in stripped:
@@ -95,22 +95,152 @@ def _check_trigger_line(line: str, indent: int, pr_events: set[str]) -> bool:
     return False
 
 
+def _validate_branch_glob(branch: str) -> None:
+    for ch in ("*", "?", "[", "!"):
+        if ch in branch:
+            raise ValueError(f"Glob pattern in branches unsupported: {branch}")
+
+
+def _parse_branches_flow(rest: str) -> list[str]:
+    clean = rest.split("#", 1)[0].strip()
+    if clean.startswith("[") and clean.endswith("]"):
+        return [x.strip().strip("'\"") for x in clean[1:-1].split(",") if x.strip()]
+    if clean:
+        return [clean.strip("'\"")]
+    return []
+
+
+def _parse_branches_block(
+    lines: list[str], start_idx: int, indent: int
+) -> tuple[list[str], int]:
+    items: list[str] = []
+    j = start_idx
+    total = len(lines)
+    for _ in range(start_idx, total):
+        if j >= total:
+            break
+        sub = lines[j]
+        sub_stripped = sub.strip()
+        if not sub_stripped or sub_stripped.startswith("#"):
+            j += 1
+            continue
+        sub_indent = len(sub) - len(sub.lstrip(" "))
+        if sub_indent <= indent or not sub_stripped.startswith("-"):
+            break
+        val = sub_stripped[1:].strip().split("#", 1)[0].strip().strip("'\"")
+        items.append(val)
+        j += 1
+    return items, j
+
+
+def _parse_branches_entry(
+    lines: list[str], idx: int, rest: str, indent: int
+) -> tuple[list[str], int]:
+    if rest:
+        branches = _parse_branches_flow(rest)
+        next_idx = idx + 1
+    else:
+        branches, next_idx = _parse_branches_block(lines, idx + 1, indent)
+    for b in branches:
+        _validate_branch_glob(b)
+    return branches, next_idx
+
+
+def _handle_pr_event_child(
+    lines: list[str], j: int, stripped: str, indent: int
+) -> tuple[bool | None, int]:
+    if ":" not in stripped:
+        return None, j + 1
+    key = stripped.split(":", 1)[0].strip().strip("'\"")
+    if key == "branches-ignore":
+        raise ValueError(f"branches-ignore unsupported in PR event at line {j + 1}")
+    if key == "branches":
+        rest = stripped.split(":", 1)[1].strip()
+        branches, next_j = _parse_branches_entry(lines, j, rest, indent)
+        return ("main" in branches), next_j
+    return None, j + 1
+
+
+def _parse_pr_event_block(lines: list[str], start_idx: int) -> tuple[bool, int]:
+    """Parse PR event block. Returns (triggers_main, next_line_idx)."""
+    has_branches = False
+    triggers_main = False
+    j = start_idx + 1
+    total = len(lines)
+    for _ in range(start_idx + 1, total):
+        if j >= total:
+            break
+        line = lines[j]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            j += 1
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent <= 2:
+            break
+        branch_match, j = _handle_pr_event_child(lines, j, stripped, indent)
+        if branch_match is not None:
+            has_branches = True
+            triggers_main = branch_match
+    if not has_branches:
+        triggers_main = True
+    return triggers_main, j
+
+
+def _parse_on_body_line(
+    lines: list[str],
+    i: int,
+    indent: int,
+    stripped: str,
+    pr_events: set[str],
+    current_triggers: bool,
+) -> tuple[bool, int]:
+    if indent == 2 and stripped.startswith("-"):
+        return (
+            current_triggers or _check_trigger_line(lines[i], indent, pr_events)
+        ), i + 1
+    if indent == 2 and ":" in stripped:
+        key = stripped.split(":", 1)[0].strip().strip("'\"")
+        if key in pr_events:
+            rest = stripped.split(":", 1)[1].split("#", 1)[0].strip()
+            if rest not in ("", "{}", "null", "~"):
+                raise ValueError(
+                    f"Inline mapping for {key} unsupported at line {i + 1}"
+                )
+            ev_triggers, next_i = _parse_pr_event_block(lines, i)
+            return (current_triggers or ev_triggers), next_i
+    return current_triggers, i + 1
+
+
 def parse_on_trigger(lines: list[str]) -> bool:
     """Determine whether workflow triggers on pull_request or pull_request_target."""
     pr_events = {"pull_request", "pull_request_target"}
     in_on = False
-    for line in lines:
+    triggers_pr = False
+    i = 0
+    total = len(lines)
+    for _ in range(total):
+        if i >= total:
+            break
+        line = lines[i]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            i += 1
             continue
         indent = len(line) - len(line.lstrip(" "))
         if indent == 0:
             in_on = line.startswith("on:")
             if in_on and line[3:].strip():
                 return _parse_inline_trigger(line[3:].strip(), pr_events)
-        elif in_on and _check_trigger_line(line, indent, pr_events):
-            return True
-    return False
+            i += 1
+            continue
+        if in_on:
+            triggers_pr, i = _parse_on_body_line(
+                lines, i, indent, stripped, pr_events, triggers_pr
+            )
+        else:
+            i += 1
+    return triggers_pr
 
 
 def _parse_matrix_flow(
@@ -224,8 +354,8 @@ def _handle_job_line(
     lines: list[str],
     i: int,
     jobs: dict[str, JobDef],
-    current: Optional[JobDef],
-) -> tuple[Optional[JobDef], int]:
+    current: JobDef | None,
+) -> tuple[JobDef | None, int]:
     line = lines[i]
     indent = len(line) - len(line.lstrip(" "))
     if indent == 2 and line.startswith("  ") and line.strip().endswith(":"):
@@ -243,7 +373,7 @@ def parse_jobs(lines: list[str]) -> dict[str, JobDef]:
     """Parse jobs dictionary from workflow lines."""
     jobs: dict[str, JobDef] = {}
     in_jobs = False
-    current_job: Optional[JobDef] = None
+    current_job: JobDef | None = None
     i = 0
     total = len(lines)
     for _ in range(total):
@@ -301,6 +431,11 @@ def get_job_reported_contexts(job: JobDef) -> list[str]:
 
     keys = list(job.matrix.keys())
     value_lists = [job.matrix[k].values for k in keys]
+    total_combinations = math.prod(len(v) for v in value_lists)
+    if total_combinations > 256:
+        raise ValueError(
+            f"Matrix combinations ({total_combinations}) exceed GitHub limit of 256"
+        )
     contexts: list[str] = []
     for combo in itertools.product(*value_lists):
         combo_map = dict(zip(keys, combo))
@@ -548,6 +683,142 @@ class TestRequiredChecks(unittest.TestCase):
 
             missing = verify_required_checks(MAIN_RULESET_PATH, tmp_workflows)
             self.assertEqual(missing, {"analyze (actions)"})
+
+    def test_negative_push_branches_pull_request_not_pr_trigger(self):
+        """Negative test: push-only workflow with branch named pull_request does not trigger on PR."""
+        yaml_content = (
+            "name: Push Only\n"
+            "on:\n"
+            "  push:\n"
+            "    branches:\n"
+            "      - pull_request\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        wf = parse_workflow_string(yaml_content)
+        self.assertFalse(wf.triggers_pr)
+        self.assertEqual(get_workflow_reported_contexts(wf), set())
+
+    def test_pr_trigger_branch_filters(self):
+        """PR trigger respects branches filter: main -> True, dev -> False, block main -> True."""
+        wf_flow_main = parse_workflow_string(
+            "name: Flow Main\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches: [main]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        self.assertTrue(wf_flow_main.triggers_pr)
+
+        wf_flow_dev = parse_workflow_string(
+            "name: Flow Dev\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches: [dev]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        self.assertFalse(wf_flow_dev.triggers_pr)
+
+        wf_block_main = parse_workflow_string(
+            "name: Block Main\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches:\n"
+            "      - dev\n"
+            "      - main\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        self.assertTrue(wf_block_main.triggers_pr)
+
+    def test_pr_unsupported_branch_filters_raise(self):
+        """branches-ignore and glob patterns in PR branches raise ValueError."""
+        wf_ignore = (
+            "name: Ignore\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches-ignore: [dev]\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_ignore)
+
+        wf_glob = (
+            "name: Glob\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches: ['release/*']\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_glob)
+
+        wf_inline = (
+            "name: Inline\n"
+            "on:\n"
+            "  pull_request: {branches: [dev]}\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_inline)
+
+        wf_empty = parse_workflow_string(
+            "name: Empty\n"
+            "on:\n"
+            "  pull_request: {}\n"
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        self.assertTrue(wf_empty.triggers_pr)
+
+    def test_matrix_expansion_limit_and_boundary(self):
+        """Matrix expansion > 256 raises ValueError; 256 exactly succeeds."""
+        job_343 = JobDef(
+            job_id="test",
+            name="Test",
+            matrix={
+                f"k{i}": MatrixSpan(
+                    key=f"k{i}",
+                    values=[f"v{j}" for j in range(7)],
+                    start_line=0,
+                    end_line=1,
+                    indent=8,
+                )
+                for i in range(3)
+            },
+        )
+        with self.assertRaises(ValueError):
+            get_job_reported_contexts(job_343)
+
+        job_256 = JobDef(
+            job_id="test",
+            name="Test",
+            matrix={
+                f"k{i}": MatrixSpan(
+                    key=f"k{i}",
+                    values=[f"v{j}" for j in range(16)],
+                    start_line=0,
+                    end_line=1,
+                    indent=8,
+                )
+                for i in range(2)
+            },
+        )
+        contexts_256 = get_job_reported_contexts(job_256)
+        self.assertEqual(len(contexts_256), 256)
 
 
 if __name__ == "__main__":
