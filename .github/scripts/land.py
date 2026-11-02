@@ -41,6 +41,7 @@ LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
 
 
 def gh(*arguments, data=None):
+    """Execute a gh CLI command with optional input and return stripped stdout."""
     done = subprocess.run(["gh", *arguments], input=data, capture_output=True, check=False, timeout=120)
     if done.returncode:
         raise SystemExit(f"gh {' '.join(arguments[:2])} failed: {done.stderr.decode().strip()[:300]}")
@@ -48,6 +49,7 @@ def gh(*arguments, data=None):
 
 
 def api(path, *arguments):
+    """Call the GitHub REST API via gh and return parsed JSON or None."""
     output = gh("api", path, *arguments)
     return json.loads(output) if output else None
 
@@ -115,6 +117,7 @@ def refusal(pr, started):
 
 
 def pull_request_runs(sha):
+    """Fetch recent pull-request CI workflow runs for the specified commit SHA."""
     runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?event=pull_request&head_sha={sha}&per_page=5")
     return runs["workflow_runs"]
 
@@ -196,6 +199,7 @@ def merge_when_clean(number):
 
 
 def land(branch, message, files):
+    """Create a branch with the specified files, open a PR, await CI, and merge when clean."""
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     api(f"repos/{REPO}/git/refs", "--method", "POST", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     contents = {name: Path(name).read_bytes() for name in files}
@@ -218,6 +222,7 @@ def land(branch, message, files):
 
 
 def merge(number):
+    """Approve and await CI on an existing pull request and merge when clean."""
     approve_and_wait(number)
     return merge_when_clean(number)
 
@@ -285,6 +290,7 @@ def resume():
 
 
 def main(arguments):
+    """Dispatch CLI arguments to land, merge, or resume commands and emit output."""
     if arguments[:1] == ["land"] and len(arguments) >= 4:
         commit = land(arguments[1], arguments[2], arguments[3:])
     elif arguments[:1] == ["merge"] and len(arguments) == 2:

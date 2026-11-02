@@ -144,6 +144,7 @@ class TestSignedCommit(unittest.TestCase):
 
 
 def make_candidate_pr(number=162, ref="cycle/123-change", title="fix: cycle test", sha="oldsha"):
+    """Construct a mock pull request dictionary for cycle candidate tests."""
     return {
         "number": number,
         "title": title,
@@ -174,6 +175,7 @@ class TestResumeRebuild(unittest.TestCase):
         )
 
     def test_resume_behind_pr_rebuilds_branch(self):
+        """Verify resuming a BEHIND pull request resets the branch and recommits changes."""
         pr = make_candidate_pr()
         run = {
             "path": ".github/workflows/cycle.yml",
@@ -335,6 +337,7 @@ class TestResumeRebuild(unittest.TestCase):
             mock_commit.assert_called_once()
 
     def test_approve_and_wait_with_lagging_sha_uses_new_sha(self):
+        """Verify approve_and_wait polls until the PR head matches the rebuilt SHA."""
         stale_pr = {"number": 162, "head": {"sha": "stalesha"}}
         new_pr = {"number": 162, "head": {"sha": "newsha"}}
         pull_responses = [stale_pr, new_pr]
@@ -365,6 +368,7 @@ class TestResumeRebuild(unittest.TestCase):
             mock_gh.assert_called_once_with("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/42/approve")
 
     def test_approve_and_wait_sha_never_appears_raises_system_exit(self):
+        """Verify approve_and_wait exits when the expected head SHA does not appear."""
         stale_pr = {"number": 162, "head": {"sha": "stalesha"}}
         with (
             unittest.mock.patch.object(land, "POLLS", 3),
@@ -378,6 +382,7 @@ class TestResumeRebuild(unittest.TestCase):
             self.assertEqual(mock_sleep.call_count, 3)
 
     def _wait(self, run_states):
+        """Execute approve_and_wait with mocked runs yielding the provided sequence of states."""
         pr = {"number": 7, "head": {"sha": "abc"}}
         runs = [[dict(state, id=9, html_url="http://run/9")] for state in run_states]
         with (
@@ -392,12 +397,14 @@ class TestResumeRebuild(unittest.TestCase):
             land.approve_and_wait(7, started="2026-10-23T00:00:00Z")
 
     def test_approval_that_never_takes_names_action_required(self):
+        """Verify failure message identifies action_required when CI approval fails to clear."""
         waiting = {"status": "completed", "conclusion": "action_required"}
         with self.assertRaises(SystemExit) as ctx:
             self._wait([waiting] * 4)
         self.assertIn("PR #7: CI on abc still action_required, approval did not take", str(ctx.exception))
 
     def test_approval_lag_then_success(self):
+        """Verify approve_and_wait tolerates transient action_required state before success."""
         waiting = {"status": "completed", "conclusion": "action_required"}
         done = {"status": "completed", "conclusion": "success"}
         self._wait([waiting, waiting, done])
@@ -405,6 +412,7 @@ class TestResumeRebuild(unittest.TestCase):
 
 class TestWaitForRun(unittest.TestCase):
     def test_wait_for_run_empty_poll_then_success(self):
+        """Verify wait_for_run handles an initial empty poll before succeeding."""
         run_success = {
             "id": 42,
             "status": "completed",
@@ -426,6 +434,7 @@ class TestWaitForRun(unittest.TestCase):
             self.assertIn("CI success", mock_print.call_args[0][0])
 
     def test_wait_for_run_all_empty_raises_system_exit(self):
+        """Verify wait_for_run exits if workflow runs never appear before timeout."""
         with (
             unittest.mock.patch.object(land, "POLLS", 3),
             unittest.mock.patch.object(land, "pull_request_runs", return_value=[]),
