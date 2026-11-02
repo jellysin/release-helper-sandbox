@@ -43,6 +43,7 @@ ALLOWED = {
     "catalog/manifest.json",
 }
 POLLS, PAUSE = 60, 10  # at most ten minutes for each wait
+RUN_POLLS = 120  # twenty minutes: codeql.yml's timeout-minutes
 LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
 
 
@@ -125,7 +126,7 @@ def refusal(pr, started):
 def pull_request_runs(sha):
     """Return the newest pull_request run of each allow-listed workflow for the commit, in PR_WORKFLOWS order."""
     data = api(f"repos/{REPO}/actions/runs?event=pull_request&head_sha={sha}&per_page=20")
-    if data["total_count"] >= 20:
+    if data["total_count"] > 20:
         raise SystemExit(f"commit {sha} has {data['total_count']} runs, more than one page")
     best_by_path = {}
     for run in data["workflow_runs"]:
@@ -177,10 +178,16 @@ def _timeout(number, sha, runs_by_path, run_states):
 
 
 def wait_for_run(number, sha):
-    """Wait for every allow-listed workflow's pull_request run to succeed, bounded."""
+    """Wait for allow-listed runs to succeed, approving action_required; reached only after refusal passed."""
+    approved_ids = set()
     runs_by_path, run_states = {}, {}
-    for _ in range(POLLS):
+    for _ in range(RUN_POLLS):
         runs = pull_request_runs(sha)
+        for run in runs:
+            if run.get("conclusion") == "action_required" and run["id"] not in approved_ids:
+                gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
+                print(f"PR #{number}: approved CI run {run['html_url']}")
+                approved_ids.add(run["id"])
         runs_by_path = {run["path"]: run for run in runs}
         run_states = _evaluate_runs(runs, number)
         if len(runs) == len(PR_WORKFLOWS) and all(run_states.get(p) == "success" for p in PR_WORKFLOWS):
@@ -212,10 +219,6 @@ def approve_and_wait(number, started=None, sha=None):
     else:
         missing = [path for path in PR_WORKFLOWS if path not in {run.get("path") for run in runs}]
         raise SystemExit(f"PR #{number}: no pull_request CI run appeared for {sha}: {', '.join(missing)}")
-    for run in runs:
-        if run.get("conclusion") == "action_required":
-            gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
-            print(f"PR #{number}: approved CI run {run['html_url']}")
     wait_for_run(number, sha)
 
 

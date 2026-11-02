@@ -343,6 +343,7 @@ class TestResumeRebuild(unittest.TestCase):
         pull_responses = [stale_pr, new_pr]
 
         def fake_api(path, *args):
+            """Return staged pull request responses for the requested path."""
             if path == f"repos/{land.REPO}/pulls/162":
                 return pull_responses.pop(0)
             raise AssertionError(f"unexpected api call: {path}")
@@ -413,6 +414,7 @@ class TestResumeRebuild(unittest.TestCase):
         ]
         with (
             unittest.mock.patch.object(land, "POLLS", 3),
+            unittest.mock.patch.object(land, "RUN_POLLS", 3),
             unittest.mock.patch.object(land, "api", return_value=pr),
             unittest.mock.patch.object(land.time, "sleep"),
             unittest.mock.patch.object(land, "gh"),
@@ -472,7 +474,7 @@ class TestWaitForRun(unittest.TestCase):
     def test_wait_for_run_all_empty_raises_system_exit(self):
         """Verify wait_for_run exits if workflow runs never appear before timeout."""
         with (
-            unittest.mock.patch.object(land, "POLLS", 3),
+            unittest.mock.patch.object(land, "RUN_POLLS", 3),
             unittest.mock.patch.object(land, "pull_request_runs", return_value=[]),
             unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
         ):
@@ -482,6 +484,7 @@ class TestWaitForRun(unittest.TestCase):
             self.assertEqual(mock_sleep.call_count, 3)
 
     def test_wait_for_run_ci_success_codeql_pending_then_success(self):
+        """Verify wait_for_run succeeds when CodeQL transitions from pending to success."""
         run_ci = {
             "id": 1,
             "path": ".github/workflows/ci.yml",
@@ -519,6 +522,7 @@ class TestWaitForRun(unittest.TestCase):
             self.assertIn("CI success", mock_print.call_args_list[1][0][0])
 
     def test_wait_for_run_ci_success_codeql_missing_raises_system_exit(self):
+        """Verify wait_for_run exits when a required workflow run never appears."""
         run_ci = {
             "id": 1,
             "path": ".github/workflows/ci.yml",
@@ -527,7 +531,7 @@ class TestWaitForRun(unittest.TestCase):
             "html_url": "http://run/1",
         }
         with (
-            unittest.mock.patch.object(land, "POLLS", 2),
+            unittest.mock.patch.object(land, "RUN_POLLS", 2),
             unittest.mock.patch.object(land, "pull_request_runs", return_value=[run_ci]),
             unittest.mock.patch.object(land, "run_jobs", return_value=[]),
             unittest.mock.patch.object(land.time, "sleep"),
@@ -538,6 +542,7 @@ class TestWaitForRun(unittest.TestCase):
             self.assertIn(".github/workflows/codeql.yml", str(ctx.exception))
 
     def test_wait_for_run_codeql_failure_raises_system_exit(self):
+        """Verify wait_for_run exits when a required workflow run fails."""
         run_ci = {
             "id": 1,
             "path": ".github/workflows/ci.yml",
@@ -560,9 +565,104 @@ class TestWaitForRun(unittest.TestCase):
                 land.wait_for_run(7, "abc")
             self.assertIn("http://run/2", str(ctx.exception))
 
+    def test_wait_for_run_approves_later_action_required_run_exactly_once(self):
+        """Verify a run turning action_required on a later poll is approved exactly once."""
+        run_ci_ok = {
+            "id": 10,
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "http://run/10",
+        }
+        run_codeql_pending = {
+            "id": 20,
+            "path": ".github/workflows/codeql.yml",
+            "status": "in_progress",
+            "conclusion": None,
+            "html_url": "http://run/20",
+        }
+        run_codeql_action_req = {
+            "id": 20,
+            "path": ".github/workflows/codeql.yml",
+            "status": "in_progress",
+            "conclusion": "action_required",
+            "html_url": "http://run/20",
+        }
+        run_codeql_success = {
+            "id": 20,
+            "path": ".github/workflows/codeql.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "http://run/20",
+        }
+        poll1 = [run_ci_ok, run_codeql_pending]
+        poll2 = [run_ci_ok, run_codeql_action_req]
+        poll3 = [run_ci_ok, run_codeql_success]
+        with (
+            unittest.mock.patch.object(land, "RUN_POLLS", 5),
+            unittest.mock.patch.object(land, "pull_request_runs", side_effect=[poll1, poll2, poll3]),
+            unittest.mock.patch.object(land, "run_jobs", return_value=[]),
+            unittest.mock.patch.object(land.time, "sleep"),
+            unittest.mock.patch.object(land, "gh") as mock_gh,
+        ):
+            land.wait_for_run(7, "abc")
+            mock_gh.assert_called_once_with("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/20/approve")
+
+    def test_wait_for_run_stuck_action_required_approves_once_and_raises_timeout(self):
+        """Verify a run staying action_required is approved only once before timeout."""
+        run_ci = {
+            "id": 10,
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "http://run/10",
+        }
+        run_codeql_stuck = {
+            "id": 20,
+            "path": ".github/workflows/codeql.yml",
+            "status": "in_progress",
+            "conclusion": "action_required",
+            "html_url": "http://run/20",
+        }
+        with (
+            unittest.mock.patch.object(land, "RUN_POLLS", 3),
+            unittest.mock.patch.object(land, "pull_request_runs", return_value=[run_ci, run_codeql_stuck]),
+            unittest.mock.patch.object(land, "run_jobs", return_value=[]),
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+            unittest.mock.patch.object(land, "gh") as mock_gh,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                land.wait_for_run(7, "abc")
+            self.assertIn("still action_required", str(ctx.exception))
+            self.assertIn("approval did not take", str(ctx.exception))
+            mock_gh.assert_called_once_with("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/20/approve")
+            self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_wait_for_run_uses_run_polls(self):
+        """Verify wait_for_run bounds iterations using RUN_POLLS rather than POLLS."""
+        run_ci = {
+            "id": 10,
+            "path": ".github/workflows/ci.yml",
+            "status": "in_progress",
+            "conclusion": None,
+            "html_url": "http://run/10",
+        }
+        with (
+            unittest.mock.patch.object(land, "POLLS", 50),
+            unittest.mock.patch.object(land, "RUN_POLLS", 3),
+            unittest.mock.patch.object(land, "pull_request_runs", return_value=[run_ci]) as mock_runs,
+            unittest.mock.patch.object(land, "run_jobs", return_value=[]),
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+        ):
+            with self.assertRaises(SystemExit):
+                land.wait_for_run(7, "abc")
+            self.assertEqual(mock_runs.call_count, 3)
+            self.assertEqual(mock_sleep.call_count, 3)
+
 
 class TestPullRequestRuns(unittest.TestCase):
     def test_pull_request_runs_filters_foreign_paths_and_picks_newest_id(self):
+        """Verify pull_request_runs filters unlisted workflows and retains latest run per path."""
         page = {
             "total_count": 4,
             "workflow_runs": [
@@ -583,8 +683,16 @@ class TestPullRequestRuns(unittest.TestCase):
                 [".github/workflows/ci.yml", ".github/workflows/codeql.yml"],
             )
 
-    def test_pull_request_runs_refuses_twenty_or_more(self):
+    def test_pull_request_runs_accepts_twenty_runs(self):
+        """Verify pull_request_runs accepts exactly 20 runs as a complete single page."""
         page = {"total_count": 20, "workflow_runs": []}
+        with unittest.mock.patch.object(land, "api", return_value=page):
+            runs = land.pull_request_runs("testsha")
+            self.assertEqual(runs, [])
+
+    def test_pull_request_runs_refuses_twenty_one_runs(self):
+        """Verify pull_request_runs refuses 21 runs as exceeding one page."""
+        page = {"total_count": 21, "workflow_runs": []}
         with unittest.mock.patch.object(land, "api", return_value=page):
             with self.assertRaises(SystemExit) as ctx:
                 land.pull_request_runs("testsha")
@@ -592,8 +700,8 @@ class TestPullRequestRuns(unittest.TestCase):
 
 
 class TestApproveBothRuns(unittest.TestCase):
-    def test_approve_and_wait_approves_both_action_required_runs(self):
-        pr = {"number": 88, "head": {"sha": "sha88"}}
+    def test_wait_for_run_approves_both_action_required_runs(self):
+        """Verify wait_for_run approves both action_required runs."""
         run_ci = {
             "id": 101,
             "path": ".github/workflows/ci.yml",
@@ -606,9 +714,37 @@ class TestApproveBothRuns(unittest.TestCase):
             "conclusion": "action_required",
             "html_url": "http://run/102",
         }
+        run_ci_ok = dict(run_ci, status="completed", conclusion="success")
+        run_codeql_ok = dict(run_codeql, status="completed", conclusion="success")
+
+        with (
+            unittest.mock.patch.object(land, "RUN_POLLS", 2),
+            unittest.mock.patch.object(
+                land, "pull_request_runs", side_effect=[[run_ci, run_codeql], [run_ci_ok, run_codeql_ok]]
+            ),
+            unittest.mock.patch.object(land, "run_jobs", return_value=[]),
+            unittest.mock.patch.object(land.time, "sleep"),
+            unittest.mock.patch.object(land, "gh") as mock_gh,
+        ):
+            land.wait_for_run(88, "sha88")
+            mock_gh.assert_has_calls(
+                [
+                    unittest.mock.call("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/101/approve"),
+                    unittest.mock.call("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/102/approve"),
+                ],
+                any_order=False,
+            )
+            self.assertEqual(mock_gh.call_count, 2)
+
+    def test_approve_and_wait_delegates_to_wait_for_run_without_approving(self):
+        """Verify approve_and_wait delegates to wait_for_run without its own approve loop."""
+        pr = {"number": 88, "head": {"sha": "sha88"}}
+        run_ci = {"id": 101, "path": ".github/workflows/ci.yml"}
+        run_codeql = {"id": 102, "path": ".github/workflows/codeql.yml"}
         runs_payload = {"total_count": 2, "workflow_runs": [run_ci, run_codeql]}
 
         def fake_api(path, *args, **kwargs):
+            """Return mock PR or runs payload for requested path."""
             if path == f"repos/{land.REPO}/pulls/88":
                 return pr
             if "actions/runs?" in path:
@@ -624,14 +760,7 @@ class TestApproveBothRuns(unittest.TestCase):
             unittest.mock.patch.object(land, "wait_for_run") as mock_wait,
         ):
             land.approve_and_wait(88, started="2026-10-23T00:00:00Z")
-            mock_gh.assert_has_calls(
-                [
-                    unittest.mock.call("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/101/approve"),
-                    unittest.mock.call("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/102/approve"),
-                ],
-                any_order=False,
-            )
-            self.assertEqual(mock_gh.call_count, 2)
+            mock_gh.assert_not_called()
             mock_wait.assert_called_once_with(88, "sha88")
 
 
