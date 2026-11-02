@@ -6,7 +6,7 @@
 # worktree, the pre-push gate's temporary one included, finds the same one.
 GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 DEV_VENV ?= $(if $(GIT_COMMON_DIR),$(patsubst %/.git,%,$(GIT_COMMON_DIR))/.venv,.venv)
-PYTHON := $(DEV_VENV)/bin/python
+export DEV_VENV
 # Praetor ships one binary under two names; resolve whichever is installed.
 PRAETORCTL ?= $(shell command -v praetorctl 2>/dev/null || command -v standardsctl 2>/dev/null || echo praetorctl)
 .PHONY: all verify-all bootstrap python-env compile-context compile-context-verify caveman-sources audit lint build test
@@ -16,15 +16,15 @@ all: build
 verify-all: compile-context-verify caveman-sources audit lint test
 
 bootstrap:
-	@case "$(DEV_VENV)" in .venv|*/.venv) ;; *) echo "DEV_VENV must name a .venv directory, not $(DEV_VENV)" >&2; exit 1;; esac
-	@python3 -m venv --clear "$(DEV_VENV)"
-	@"$(PYTHON)" -m pip install --quiet --timeout 60 --require-hashes -r requirements-dev.txt
-	@cp requirements-dev.txt "$(DEV_VENV)/requirements-dev.txt"
+	@case "$$DEV_VENV" in .venv|*/.venv) ;; *) echo "DEV_VENV must name a .venv directory, not $$DEV_VENV" >&2; exit 1;; esac
+	@python3 -m venv --clear "$$DEV_VENV"
+	@"$$DEV_VENV/bin/python" -m pip install --quiet --timeout 60 --require-hashes -r requirements-dev.txt
+	@cp requirements-dev.txt "$$DEV_VENV/requirements-dev.txt"
 
 python-env:
-	@test -x "$(PYTHON)" || { echo "$(PYTHON) is missing: run 'make bootstrap'" >&2; exit 1; }
-	@cmp -s requirements-dev.txt "$(DEV_VENV)/requirements-dev.txt" || \
-		{ echo "$(DEV_VENV) does not match requirements-dev.txt: run 'make bootstrap'" >&2; exit 1; }
+	@test -x "$$DEV_VENV/bin/python" || { echo "$$DEV_VENV/bin/python is missing: run 'make bootstrap'" >&2; exit 1; }
+	@cmp -s requirements-dev.txt "$$DEV_VENV/requirements-dev.txt" || \
+		{ echo "$$DEV_VENV does not match requirements-dev.txt: run 'make bootstrap'" >&2; exit 1; }
 
 compile-context:
 	@$(PRAETORCTL) compile-context
@@ -39,8 +39,8 @@ audit:
 	@$(PRAETORCTL) audit
 
 lint: python-env
-	@"$(PYTHON)" -m ruff check .
-	@"$(PYTHON)" -m ruff format --check .
+	@"$$DEV_VENV/bin/python" -m ruff check .
+	@"$$DEV_VENV/bin/python" -m ruff format --check .
 
 # The sandbox's verification is its release cycle against the forge (.github/workflows/cycle.yml);
 # locally the workflows and the cycle's scripts are linted.
