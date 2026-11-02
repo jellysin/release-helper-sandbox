@@ -41,6 +41,7 @@ LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
 
 
 def gh(*arguments, data=None):
+    """Execute a gh CLI command with optional input and return stripped stdout."""
     done = subprocess.run(["gh", *arguments], input=data, capture_output=True, check=False, timeout=120)
     if done.returncode:
         raise SystemExit(f"gh {' '.join(arguments[:2])} failed: {done.stderr.decode().strip()[:300]}")
@@ -48,6 +49,7 @@ def gh(*arguments, data=None):
 
 
 def api(path, *arguments):
+    """Call the GitHub REST API via gh and return parsed JSON or None."""
     output = gh("api", path, *arguments)
     return json.loads(output) if output else None
 
@@ -81,11 +83,7 @@ def ci_state(run, jobs):
         return "100 jobs or more"
     if jobs and all(job.get("status") == "completed" for job in jobs):
         allowed = {"success", "skipped", "neutral"}
-        failed = [
-            job.get("name", "unnamed")
-            for job in jobs
-            if job.get("conclusion") not in allowed
-        ]
+        failed = [job.get("name", "unnamed") for job in jobs if job.get("conclusion") not in allowed]
         if not failed:
             return "success"
         return f"failed jobs: {', '.join(failed)}"
@@ -119,6 +117,7 @@ def refusal(pr, started):
 
 
 def pull_request_runs(sha):
+    """Fetch recent pull-request CI workflow runs for the specified commit SHA."""
     runs = api(f"repos/{REPO}/actions/workflows/{CI_WORKFLOW}/runs?event=pull_request&head_sha={sha}&per_page=5")
     return runs["workflow_runs"]
 
@@ -133,6 +132,30 @@ def wait_for_head(number, sha):
             return pr
         time.sleep(PAUSE)
     raise SystemExit(f"PR #{number}: head is {seen}, not the rebuilt {sha}")
+
+
+def wait_for_run(number, sha):
+    """Wait for the PR's CI run to succeed, bounded."""
+    state = "pending"
+    for _ in range(POLLS):
+        runs = pull_request_runs(sha)
+        if not runs:
+            time.sleep(PAUSE)
+            continue
+        run = runs[0]
+        jobs = run_jobs(run["id"])
+        state = ci_state(run, jobs)
+        if state == "success":
+            lagging = run.get("status") != "completed"
+            tag = " (jobs complete, run status lagging)" if lagging else ""
+            print(f"PR #{number}: CI success{tag} {run['html_url']}")
+            return
+        if state not in ("pending", "action_required"):
+            raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
+        time.sleep(PAUSE)
+    if state == "action_required":
+        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
+    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
 
 
 def approve_and_wait(number, started=None, sha=None):
@@ -155,22 +178,7 @@ def approve_and_wait(number, started=None, sha=None):
         if run["conclusion"] == "action_required":
             gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
             print(f"PR #{number}: approved CI run {run['html_url']}")
-    state = "pending"
-    for _ in range(POLLS):
-        run = pull_request_runs(sha)[0]
-        jobs = run_jobs(run["id"])
-        state = ci_state(run, jobs)
-        if state == "success":
-            lagging = run.get("status") != "completed"
-            tag = " (jobs complete, run status lagging)" if lagging else ""
-            print(f"PR #{number}: CI success{tag} {run['html_url']}")
-            return
-        if state not in ("pending", "action_required"):
-            raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
-        time.sleep(PAUSE)
-    if state == "action_required":
-        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
-    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
+    wait_for_run(number, sha)
 
 
 def merge_when_clean(number):
@@ -191,6 +199,7 @@ def merge_when_clean(number):
 
 
 def land(branch, message, files):
+    """Create a branch with the specified files, open a PR, await CI, and merge when clean."""
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
     api(f"repos/{REPO}/git/refs", "--method", "POST", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     contents = {name: Path(name).read_bytes() for name in files}
@@ -213,6 +222,7 @@ def land(branch, message, files):
 
 
 def merge(number):
+    """Approve and await CI on an existing pull request and merge when clean."""
     approve_and_wait(number)
     return merge_when_clean(number)
 
@@ -280,6 +290,7 @@ def resume():
 
 
 def main(arguments):
+    """Dispatch CLI arguments to land, merge, or resume commands and emit output."""
     if arguments[:1] == ["land"] and len(arguments) >= 4:
         commit = land(arguments[1], arguments[2], arguments[3:])
     elif arguments[:1] == ["merge"] and len(arguments) == 2:

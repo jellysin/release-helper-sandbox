@@ -2,6 +2,7 @@ bin/
 *.test
 *.out
 .DS_Store
+.venv/
 
 # BEGIN praetor private artifacts (praetorctl adopt)
 .workingdir/

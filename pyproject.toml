@@ -1,0 +1,24 @@
+[tool.ruff]
+# Python 3.13 syntax, though 3.15 is the floor: semgrep 1.180 cannot parse the 3.14 unparenthesized
+# except clause, and a line it cannot parse is a line it does not scan.
+target-version = "py313"
+line-length = 120
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "C90", "PLR0915"]
+
+# Praetor writes these three files, and a local repair disables its checkpoint lifecycle
+# (cordanaLLM/praetor#1204), so they keep the engine's formatting until 2027-01-09.
+[tool.ruff.format]
+exclude = [
+  ".config/agent/hooks/block_evasion.py", # cordanaLLM/praetor#1204, until 2027-01-09
+  ".config/lefthook/scripts/checkpoint.py", # cordanaLLM/praetor#1204, until 2027-01-09
+  ".config/lefthook/scripts/common.py", # cordanaLLM/praetor#1204, until 2027-01-09
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-statements = 60

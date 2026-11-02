@@ -59,9 +59,7 @@ def check_unsupported_tokens(lines: list[str]) -> None:
 def parse_job_name(raw_val: str) -> str:
     """Parse and validate scalar job name, permitting only matrix expressions."""
     val = raw_val.split("#", 1)[0].strip()
-    if (val.startswith("'") and val.endswith("'")) or (
-        val.startswith('"') and val.endswith('"')
-    ):
+    if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
         val = val[1:-1].strip()
     expressions = re.findall(r"\$\{\{\s*([^}]+?)\s*\}\}", val)
     for expr in expressions:
@@ -174,9 +172,7 @@ def _parse_list_flow(rest: str) -> list[str]:
     return []
 
 
-def _parse_list_block(
-    lines: list[str], start_idx: int, indent: int
-) -> tuple[list[str], int]:
+def _parse_list_block(lines: list[str], start_idx: int, indent: int) -> tuple[list[str], int]:
     """Return list items parsed from block sequence lines and next line index."""
     items: list[str] = []
     j = start_idx
@@ -198,9 +194,7 @@ def _parse_list_block(
     return items, j
 
 
-def _parse_list_entry(
-    lines: list[str], idx: int, rest: str, indent: int
-) -> tuple[list[str], int]:
+def _parse_list_entry(lines: list[str], idx: int, rest: str, indent: int) -> tuple[list[str], int]:
     """Return parsed list items from flow or block syntax and next line index."""
     clean_rest = rest.split("#", 1)[0].strip()
     if clean_rest:
@@ -208,9 +202,7 @@ def _parse_list_entry(
     return _parse_list_block(lines, idx + 1, indent)
 
 
-def _parse_branches_entry(
-    lines: list[str], idx: int, rest: str, indent: int
-) -> tuple[list[str], int]:
+def _parse_branches_entry(lines: list[str], idx: int, rest: str, indent: int) -> tuple[list[str], int]:
     """Return branch names and next line index, or raise ValueError on wildcards."""
     branches, next_idx = _parse_list_entry(lines, idx, rest, indent)
     for b in branches:
@@ -218,22 +210,16 @@ def _parse_branches_entry(
     return branches, next_idx
 
 
-def _parse_types_entry(
-    lines: list[str], idx: int, rest: str, indent: int
-) -> tuple[list[str], int]:
+def _parse_types_entry(lines: list[str], idx: int, rest: str, indent: int) -> tuple[list[str], int]:
     """Return event types and next index, or raise ValueError on missing required types."""
     types_list, next_idx = _parse_list_entry(lines, idx, rest, indent)
     if not REQUIRED_PR_TYPES.issubset(types_list):
         missing = sorted(REQUIRED_PR_TYPES - set(types_list))
-        raise ValueError(
-            f"types under PR event missing required types {missing} at line {idx + 1}"
-        )
+        raise ValueError(f"types under PR event missing required types {missing} at line {idx + 1}")
     return types_list, next_idx
 
 
-def _handle_pr_event_child(
-    lines: list[str], j: int, stripped: str, indent: int
-) -> tuple[bool | None, int]:
+def _handle_pr_event_child(lines: list[str], j: int, stripped: str, indent: int) -> tuple[bool | None, int]:
     """Return whether main is targeted and next index, or raise ValueError on unknown keys."""
     if ":" not in stripped:
         raise ValueError(f"Unsupported entry in PR event at line {j + 1}: {stripped}")
@@ -286,17 +272,13 @@ def _parse_on_body_line(
 ) -> tuple[bool, int]:
     """Return updated trigger flag and next index, or raise ValueError on inline mapping."""
     if indent == 2 and stripped.startswith("-"):
-        return (
-            current_triggers or _check_trigger_line(lines[i], indent, pr_events)
-        ), i + 1
+        return (current_triggers or _check_trigger_line(lines[i], indent, pr_events)), i + 1
     if indent == 2 and ":" in stripped:
         key = stripped.split(":", 1)[0].strip().strip("'\"")
         if key in pr_events:
             rest = stripped.split(":", 1)[1].split("#", 1)[0].strip()
             if rest not in ("", "{}", "null", "~"):
-                raise ValueError(
-                    f"Inline mapping for {key} unsupported at line {i + 1}"
-                )
+                raise ValueError(f"Inline mapping for {key} unsupported at line {i + 1}")
             ev_triggers, next_i = _parse_pr_event_block(lines, i)
             return (current_triggers or ev_triggers), next_i
     return current_triggers, i + 1
@@ -325,17 +307,13 @@ def parse_on_trigger(lines: list[str]) -> bool:
             i += 1
             continue
         if in_on:
-            triggers_pr, i = _parse_on_body_line(
-                lines, i, indent, stripped, pr_events, triggers_pr
-            )
+            triggers_pr, i = _parse_on_body_line(lines, i, indent, stripped, pr_events, triggers_pr)
         else:
             i += 1
     return triggers_pr
 
 
-def _parse_matrix_flow(
-    key: str, rest: str, idx: int, indent: int
-) -> tuple[MatrixSpan, int]:
+def _parse_matrix_flow(key: str, rest: str, idx: int, indent: int) -> tuple[MatrixSpan, int]:
     """Return MatrixSpan and next index, or raise ValueError on malformed values."""
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
@@ -353,9 +331,7 @@ def _parse_matrix_flow(
     raise ValueError(f"Unsupported matrix value format for key {key}: {rest}")
 
 
-def _parse_matrix_block_items(
-    lines: list[str], idx: int, indent: int
-) -> tuple[list[str], int]:
+def _parse_matrix_block_items(lines: list[str], idx: int, indent: int) -> tuple[list[str], int]:
     """Return parsed sequence items from matrix block lines and next line index."""
     values: list[str] = []
     j = idx + 1
@@ -377,9 +353,7 @@ def _parse_matrix_block_items(
     return values, j
 
 
-def _parse_matrix_key(
-    lines: list[str], idx: int, key: str, rest: str, indent: int
-) -> tuple[MatrixSpan, int]:
+def _parse_matrix_key(lines: list[str], idx: int, key: str, rest: str, indent: int) -> tuple[MatrixSpan, int]:
     """Return MatrixSpan and next index, or raise ValueError if block values are empty."""
     if rest:
         return _parse_matrix_flow(key, rest, idx, indent)
@@ -396,9 +370,7 @@ def _parse_matrix_key(
     return span, end_line
 
 
-def parse_matrix_block(
-    lines: list[str], start_idx: int
-) -> tuple[dict[str, MatrixSpan], int]:
+def parse_matrix_block(lines: list[str], start_idx: int) -> tuple[dict[str, MatrixSpan], int]:
     """Parse matrix keys and values under strategy.matrix."""
     matrix: dict[str, MatrixSpan] = {}
     i = start_idx
@@ -427,9 +399,7 @@ def parse_matrix_block(
     return matrix, i
 
 
-def _handle_job_body_line(
-    lines: list[str], i: int, current_job: JobDef
-) -> int:
+def _handle_job_body_line(lines: list[str], i: int, current_job: JobDef) -> int:
     """Return next line index after updating job name or matrix configuration."""
     line = lines[i]
     stripped = line.strip()
@@ -528,12 +498,10 @@ def get_job_reported_contexts(job: JobDef) -> list[str]:
     value_lists = [job.matrix[k].values for k in keys]
     total_combinations = math.prod(len(v) for v in value_lists)
     if total_combinations > 256:
-        raise ValueError(
-            f"Matrix combinations ({total_combinations}) exceed GitHub limit of 256"
-        )
+        raise ValueError(f"Matrix combinations ({total_combinations}) exceed GitHub limit of 256")
     contexts: list[str] = []
     for combo in itertools.product(*value_lists):
-        combo_map = dict(zip(keys, combo))
+        combo_map = dict(zip(keys, combo, strict=True))
         if job.name is not None and re.search(r"\$\{\{\s*matrix\.", job.name):
             ctx = job.name
             for k, v in combo_map.items():
