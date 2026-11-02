@@ -94,10 +94,38 @@ def _validate_branch_glob(branch: str) -> None:
             raise ValueError(f"Glob pattern in branches unsupported: {branch}")
 
 
+def _split_flow_sequence(raw: str) -> list[str]:
+    """Split comma-separated flow sequence outside quotes, stripping quotes."""
+    items: list[str] = []
+    current: list[str] = []
+    quote_char: str | None = None
+    for ch in raw:
+        if quote_char is not None:
+            if ch == quote_char:
+                quote_char = None
+            current.append(ch)
+        elif ch in ("'", '"'):
+            quote_char = ch
+            current.append(ch)
+        elif ch == ",":
+            token = "".join(current).strip().strip("'\"")
+            if token:
+                items.append(token)
+            current = []
+        else:
+            current.append(ch)
+    if quote_char is not None:
+        raise ValueError(f"Unterminated quote in flow sequence: {raw}")
+    token = "".join(current).strip().strip("'\"")
+    if token:
+        items.append(token)
+    return items
+
+
 def _parse_branches_flow(rest: str) -> list[str]:
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
-        return [x.strip().strip("'\"") for x in clean[1:-1].split(",") if x.strip()]
+        return _split_flow_sequence(clean[1:-1])
     if clean:
         return [clean.strip("'\"")]
     return []
@@ -145,8 +173,8 @@ def _handle_pr_event_child(
     if ":" not in stripped:
         return None, j + 1
     key = stripped.split(":", 1)[0].strip().strip("'\"")
-    if key == "branches-ignore":
-        raise ValueError(f"branches-ignore unsupported in PR event at line {j + 1}")
+    if key in ("branches-ignore", "paths", "paths-ignore"):
+        raise ValueError(f"{key} unsupported in PR event at line {j + 1}")
     if key == "branches":
         rest = stripped.split(":", 1)[1].strip()
         branches, next_j = _parse_branches_entry(lines, j, rest, indent)
@@ -241,7 +269,7 @@ def _parse_matrix_flow(
 ) -> tuple[MatrixSpan, int]:
     clean = rest.split("#", 1)[0].strip()
     if clean.startswith("[") and clean.endswith("]"):
-        items = [x.strip().strip("'\"") for x in clean[1:-1].split(",") if x.strip()]
+        items = _split_flow_sequence(clean[1:-1])
         if not items:
             raise ValueError(f"Empty flow matrix for key {key}")
         span = MatrixSpan(

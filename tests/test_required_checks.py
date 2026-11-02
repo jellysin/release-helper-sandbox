@@ -339,6 +339,77 @@ class TestRequiredChecks(unittest.TestCase):
         contexts_256 = get_job_reported_contexts(job_256)
         self.assertEqual(len(contexts_256), 256)
 
+    def test_pr_unsupported_path_filters_raise(self):
+        """paths and paths-ignore under pull_request and pull_request_target raise ValueError."""
+        for event in ("pull_request", "pull_request_target"):
+            for key in ("paths", "paths-ignore"):
+                wf_content = (
+                    "name: Test\n"
+                    "on:\n"
+                    f"  {event}:\n"
+                    f"    {key}: ['src/**']\n"
+                    "jobs:\n"
+                    "  build:\n"
+                    "    name: Build\n"
+                )
+                with self.assertRaises(ValueError):
+                    parse_workflow_string(wf_content)
+
+    def test_matrix_flow_quoted_scalars_and_unterminated(self):
+        """Matrix flow sequence handles quotes and detects unterminated quotes."""
+        wf_single = (
+            "name: Test\n"
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  test:\n"
+            "    strategy:\n"
+            "      matrix:\n"
+            '        language: ["python,actions"]\n'
+        )
+        wf = parse_workflow_string(wf_single)
+        self.assertEqual(
+            wf.jobs["test"].matrix["language"].values, ["python,actions"]
+        )
+
+        wf_two = (
+            "name: Test\n"
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  test:\n"
+            "    strategy:\n"
+            "      matrix:\n"
+            "        language: [python, 'actions']\n"
+        )
+        wf = parse_workflow_string(wf_two)
+        self.assertEqual(
+            wf.jobs["test"].matrix["language"].values, ["python", "actions"]
+        )
+
+        wf_unterminated = (
+            "name: Test\n"
+            "on: [pull_request]\n"
+            "jobs:\n"
+            "  test:\n"
+            "    strategy:\n"
+            "      matrix:\n"
+            '        language: ["python, actions]\n'
+        )
+        with self.assertRaises(ValueError):
+            parse_workflow_string(wf_unterminated)
+
+    def test_branches_flow_quoted_comma_not_main(self):
+        """Quoted comma in branches flow sequence does not match main."""
+        wf = parse_workflow_string(
+            "name: Flow Quoted\n"
+            "on:\n"
+            "  pull_request:\n"
+            '    branches: ["main,dev"]\n'
+            "jobs:\n"
+            "  build:\n"
+            "    name: Build\n"
+        )
+        self.assertFalse(wf.triggers_pr)
+
 
 if __name__ == "__main__":
     unittest.main()
