@@ -4,8 +4,9 @@
 # hash-pinned requirements-dev.txt; a missing or stale one fails, never falls back to the host
 # python. The environment lives beside the repository's shared git directory, so every linked
 # worktree, the pre-push gate's temporary one included, finds the same one.
-GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-DEV_VENV ?= $(if $(GIT_COMMON_DIR),$(patsubst %/.git,%,$(GIT_COMMON_DIR))/.venv,.venv)
+ifeq ($(origin DEV_VENV),undefined)
+DEV_VENV := $(shell d=$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); if [ -n "$$d" ]; then printf '%s/.venv' "$${d%/.git}"; else printf .venv; fi)
+endif
 export DEV_VENV
 # Praetor ships one binary under two names; resolve whichever is installed.
 PRAETORCTL ?= $(shell command -v praetorctl 2>/dev/null || command -v standardsctl 2>/dev/null || echo praetorctl)
