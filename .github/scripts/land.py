@@ -81,11 +81,7 @@ def ci_state(run, jobs):
         return "100 jobs or more"
     if jobs and all(job.get("status") == "completed" for job in jobs):
         allowed = {"success", "skipped", "neutral"}
-        failed = [
-            job.get("name", "unnamed")
-            for job in jobs
-            if job.get("conclusion") not in allowed
-        ]
+        failed = [job.get("name", "unnamed") for job in jobs if job.get("conclusion") not in allowed]
         if not failed:
             return "success"
         return f"failed jobs: {', '.join(failed)}"
@@ -135,6 +131,26 @@ def wait_for_head(number, sha):
     raise SystemExit(f"PR #{number}: head is {seen}, not the rebuilt {sha}")
 
 
+def wait_for_run(number, sha):
+    """Wait for the PR's CI run to succeed, bounded."""
+    state = "pending"
+    for _ in range(POLLS):
+        run = pull_request_runs(sha)[0]
+        jobs = run_jobs(run["id"])
+        state = ci_state(run, jobs)
+        if state == "success":
+            lagging = run.get("status") != "completed"
+            tag = " (jobs complete, run status lagging)" if lagging else ""
+            print(f"PR #{number}: CI success{tag} {run['html_url']}")
+            return
+        if state not in ("pending", "action_required"):
+            raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
+        time.sleep(PAUSE)
+    if state == "action_required":
+        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
+    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
+
+
 def approve_and_wait(number, started=None, sha=None):
     """Approve the PR's waiting pull_request CI run when the PR qualifies, and wait for it to succeed."""
     if started is None:
@@ -155,22 +171,7 @@ def approve_and_wait(number, started=None, sha=None):
         if run["conclusion"] == "action_required":
             gh("api", "--method", "POST", f"repos/{REPO}/actions/runs/{run['id']}/approve")
             print(f"PR #{number}: approved CI run {run['html_url']}")
-    state = "pending"
-    for _ in range(POLLS):
-        run = pull_request_runs(sha)[0]
-        jobs = run_jobs(run["id"])
-        state = ci_state(run, jobs)
-        if state == "success":
-            lagging = run.get("status") != "completed"
-            tag = " (jobs complete, run status lagging)" if lagging else ""
-            print(f"PR #{number}: CI success{tag} {run['html_url']}")
-            return
-        if state not in ("pending", "action_required"):
-            raise SystemExit(f"PR #{number}: CI {state}: {run['html_url']}")
-        time.sleep(PAUSE)
-    if state == "action_required":
-        raise SystemExit(f"PR #{number}: CI on {sha} still action_required, approval did not take")
-    raise SystemExit(f"PR #{number}: CI on {sha} did not finish in time")
+    wait_for_run(number, sha)
 
 
 def merge_when_clean(number):

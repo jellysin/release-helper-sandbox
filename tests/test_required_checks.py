@@ -56,15 +56,7 @@ class TestRequiredChecks(unittest.TestCase):
 
     def test_negative_push_only_workflow(self):
         """Negative test: push-only workflow does not report PR checks."""
-        yaml_content = (
-            "name: Push Only\n"
-            "on:\n"
-            "  push:\n"
-            "    branches: [main]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        yaml_content = "name: Push Only\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    name: Build\n"
         wf = parse_workflow_string(yaml_content, "push_only.yml")
         self.assertFalse(wf.triggers_pr)
         self.assertEqual(get_workflow_reported_contexts(wf), set())
@@ -161,13 +153,7 @@ class TestRequiredChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_workflow_string("name: test\nenv: &default\n  FOO: bar\n")
 
-        yaml_bad_name = (
-            "name: Test\n"
-            "on: [pull_request]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build ${{ env.TARGET }}\n"
-        )
+        yaml_bad_name = "name: Test\non: [pull_request]\njobs:\n  build:\n    name: Build ${{ env.TARGET }}\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(yaml_bad_name)
 
@@ -207,14 +193,7 @@ class TestRequiredChecks(unittest.TestCase):
     def test_negative_push_branches_pull_request_not_pr_trigger(self):
         """Negative test: push-only workflow with branch named pull_request does not trigger on PR."""
         yaml_content = (
-            "name: Push Only\n"
-            "on:\n"
-            "  push:\n"
-            "    branches:\n"
-            "      - pull_request\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
+            "name: Push Only\non:\n  push:\n    branches:\n      - pull_request\njobs:\n  build:\n    name: Build\n"
         )
         wf = parse_workflow_string(yaml_content)
         self.assertFalse(wf.triggers_pr)
@@ -223,24 +202,12 @@ class TestRequiredChecks(unittest.TestCase):
     def test_pr_trigger_branch_filters(self):
         """PR trigger respects branches filter: main -> True, dev -> False, block main -> True."""
         wf_flow_main = parse_workflow_string(
-            "name: Flow Main\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    branches: [main]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
+            "name: Flow Main\non:\n  pull_request:\n    branches: [main]\njobs:\n  build:\n    name: Build\n"
         )
         self.assertTrue(wf_flow_main.triggers_pr)
 
         wf_flow_dev = parse_workflow_string(
-            "name: Flow Dev\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    branches: [dev]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
+            "name: Flow Dev\non:\n  pull_request:\n    branches: [dev]\njobs:\n  build:\n    name: Build\n"
         )
         self.assertFalse(wf_flow_dev.triggers_pr)
 
@@ -259,49 +226,19 @@ class TestRequiredChecks(unittest.TestCase):
 
     def test_pr_unsupported_branch_filters_raise(self):
         """branches-ignore and glob patterns in PR branches raise ValueError."""
-        wf_ignore = (
-            "name: Ignore\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    branches-ignore: [dev]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_ignore = "name: Ignore\non:\n  pull_request:\n    branches-ignore: [dev]\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_ignore)
 
-        wf_glob = (
-            "name: Glob\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    branches: ['release/*']\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_glob = "name: Glob\non:\n  pull_request:\n    branches: ['release/*']\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_glob)
 
-        wf_inline = (
-            "name: Inline\n"
-            "on:\n"
-            "  pull_request: {branches: [dev]}\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_inline = "name: Inline\non:\n  pull_request: {branches: [dev]}\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_inline)
 
-        wf_empty = parse_workflow_string(
-            "name: Empty\n"
-            "on:\n"
-            "  pull_request: {}\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_empty = parse_workflow_string("name: Empty\non:\n  pull_request: {}\njobs:\n  build:\n    name: Build\n")
         self.assertTrue(wf_empty.triggers_pr)
 
     def test_matrix_expansion_limit_and_boundary(self):
@@ -344,15 +281,7 @@ class TestRequiredChecks(unittest.TestCase):
         """paths and paths-ignore under pull_request and pull_request_target raise ValueError."""
         for event in ("pull_request", "pull_request_target"):
             for key in ("paths", "paths-ignore"):
-                wf_content = (
-                    "name: Test\n"
-                    "on:\n"
-                    f"  {event}:\n"
-                    f"    {key}: ['src/**']\n"
-                    "jobs:\n"
-                    "  build:\n"
-                    "    name: Build\n"
-                )
+                wf_content = f"name: Test\non:\n  {event}:\n    {key}: ['src/**']\njobs:\n  build:\n    name: Build\n"
                 with self.assertRaises(ValueError):
                     parse_workflow_string(wf_content)
 
@@ -368,9 +297,7 @@ class TestRequiredChecks(unittest.TestCase):
             '        language: ["python,actions"]\n'
         )
         wf = parse_workflow_string(wf_single)
-        self.assertEqual(
-            wf.jobs["test"].matrix["language"].values, ["python,actions"]
-        )
+        self.assertEqual(wf.jobs["test"].matrix["language"].values, ["python,actions"])
 
         wf_two = (
             "name: Test\n"
@@ -382,9 +309,7 @@ class TestRequiredChecks(unittest.TestCase):
             "        language: [python, 'actions']\n"
         )
         wf = parse_workflow_string(wf_two)
-        self.assertEqual(
-            wf.jobs["test"].matrix["language"].values, ["python", "actions"]
-        )
+        self.assertEqual(wf.jobs["test"].matrix["language"].values, ["python", "actions"])
 
         wf_unterminated = (
             "name: Test\n"
@@ -401,52 +326,24 @@ class TestRequiredChecks(unittest.TestCase):
     def test_branches_flow_quoted_comma_not_main(self):
         """Quoted comma in branches flow sequence does not match main."""
         wf = parse_workflow_string(
-            "name: Flow Quoted\n"
-            "on:\n"
-            "  pull_request:\n"
-            '    branches: ["main,dev"]\n'
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
+            'name: Flow Quoted\non:\n  pull_request:\n    branches: ["main,dev"]\njobs:\n  build:\n    name: Build\n'
         )
         self.assertFalse(wf.triggers_pr)
 
     def test_pr_unsupported_child_keys_raise(self):
         """pull_request child tags: and unknown key foo: raise ValueError."""
-        wf_tags = (
-            "name: Tags\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    tags: [v1]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_tags = "name: Tags\non:\n  pull_request:\n    tags: [v1]\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_tags)
 
-        wf_foo = (
-            "name: Foo\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    foo: bar\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        wf_foo = "name: Foo\non:\n  pull_request:\n    foo: bar\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_foo)
 
     def test_pr_types_validation(self):
         """PR event types validation for flow and block lists."""
         wf_labeled = (
-            "name: Labeled Only\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    types: [labeled]\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
+            "name: Labeled Only\non:\n  pull_request:\n    types: [labeled]\njobs:\n  build:\n    name: Build\n"
         )
         with self.assertRaises(ValueError):
             parse_workflow_string(wf_labeled)
@@ -508,20 +405,12 @@ class TestRequiredChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             _split_flow_sequence("a,,b")
 
-
     def test_pr_event_non_key_entry_raises(self):
         """A list item directly under pull_request is not an allowed child key."""
-        yaml_content = (
-            "name: Stray\n"
-            "on:\n"
-            "  pull_request:\n"
-            "    - main\n"
-            "jobs:\n"
-            "  build:\n"
-            "    name: Build\n"
-        )
+        yaml_content = "name: Stray\non:\n  pull_request:\n    - main\njobs:\n  build:\n    name: Build\n"
         with self.assertRaises(ValueError):
             parse_workflow_string(yaml_content)
+
 
 if __name__ == "__main__":
     unittest.main()

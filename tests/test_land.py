@@ -90,10 +90,7 @@ class TestCiState(unittest.TestCase):
 
     def test_refuse_100_jobs_as_failure(self):
         run = {"status": "in_progress", "conclusion": None}
-        jobs = [
-            {"name": f"job{i}", "status": "completed", "conclusion": "success"}
-            for i in range(100)
-        ]
+        jobs = [{"name": f"job{i}", "status": "completed", "conclusion": "success"} for i in range(100)]
         result = land.ci_state(run, jobs)
         self.assertNotEqual(result, "success")
         self.assertNotEqual(result, "pending")
@@ -140,9 +137,10 @@ class TestSignedCommit(unittest.TestCase):
             payload = json.loads(kwargs["data"].decode("utf-8"))
             self.assertEqual(payload["variables"]["input"]["branch"]["branchName"], "test-branch")
             self.assertEqual(payload["variables"]["input"]["expectedHeadOid"], "base123")
-            self.assertEqual(payload["variables"]["input"]["fileChanges"]["additions"], [
-                {"path": "version.txt", "contents": base64.b64encode(b"1.0.0").decode()}
-            ])
+            self.assertEqual(
+                payload["variables"]["input"]["fileChanges"]["additions"],
+                [{"path": "version.txt", "contents": base64.b64encode(b"1.0.0").decode()}],
+            )
 
 
 def make_candidate_pr(number=162, ref="cycle/123-change", title="fix: cycle test", sha="oldsha"):
@@ -155,9 +153,33 @@ def make_candidate_pr(number=162, ref="cycle/123-change", title="fix: cycle test
 
 
 class TestResumeRebuild(unittest.TestCase):
+    def assert_rebuilt(self, patch_called, created_commits, content_bytes):
+        """Assert the branch was reset to main and the change re-committed on it once."""
+        self.assertEqual(len(patch_called), 1)
+        self.assertEqual(
+            patch_called[0],
+            (
+                f"repos/{land.REPO}/git/refs/heads/cycle/123-change",
+                ("--method", "PATCH", "-f", "sha=mainsha123456789012", "-F", "force=true"),
+            ),
+        )
+        self.assertEqual(len(created_commits), 1)
+        inp = created_commits[0]["variables"]["input"]
+        self.assertEqual(inp["branch"]["branchName"], "cycle/123-change")
+        self.assertEqual(inp["expectedHeadOid"], "mainsha123456789012")
+        self.assertEqual(inp["message"]["headline"], "fix: cycle test")
+        self.assertEqual(
+            inp["fileChanges"]["additions"],
+            [{"path": "version.txt", "contents": base64.b64encode(content_bytes).decode()}],
+        )
+
     def test_resume_behind_pr_rebuilds_branch(self):
         pr = make_candidate_pr()
-        run = {"path": ".github/workflows/cycle.yml", "repository": {"full_name": land.REPO}, "created_at": "2026-10-23T00:00:00Z"}
+        run = {
+            "path": ".github/workflows/cycle.yml",
+            "repository": {"full_name": land.REPO},
+            "created_at": "2026-10-23T00:00:00Z",
+        }
         view = {"mergeStateStatus": "BEHIND", "headRefOid": "headsha123"}
         files = [{"filename": "version.txt", "status": "modified"}]
         content_bytes = b"2.0.0\n"
@@ -189,25 +211,15 @@ class TestResumeRebuild(unittest.TestCase):
                 return graphql_resp
             raise AssertionError(f"unexpected gh call: {args}")
 
-        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
-             unittest.mock.patch.object(land, "gh", side_effect=fake_gh), \
-             unittest.mock.patch.object(land, "approve_and_wait") as mock_approve, \
-             unittest.mock.patch.object(land, "merge_when_clean") as mock_merge:
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=fake_api),
+            unittest.mock.patch.object(land, "gh", side_effect=fake_gh),
+            unittest.mock.patch.object(land, "approve_and_wait") as mock_approve,
+            unittest.mock.patch.object(land, "merge_when_clean") as mock_merge,
+        ):
             land.resume()
 
-            self.assertEqual(len(patch_called), 1)
-            self.assertEqual(patch_called[0], (
-                f"repos/{land.REPO}/git/refs/heads/cycle/123-change",
-                ("--method", "PATCH", "-f", "sha=mainsha123456789012", "-F", "force=true"),
-            ))
-            self.assertEqual(len(created_commits), 1)
-            inp = created_commits[0]["variables"]["input"]
-            self.assertEqual(inp["branch"]["branchName"], "cycle/123-change")
-            self.assertEqual(inp["expectedHeadOid"], "mainsha123456789012")
-            self.assertEqual(inp["message"]["headline"], "fix: cycle test")
-            self.assertEqual(inp["fileChanges"]["additions"], [
-                {"path": "version.txt", "contents": base64.b64encode(content_bytes).decode()}
-            ])
+            self.assert_rebuilt(patch_called, created_commits, content_bytes)
             mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha="new_commit_sha")
             mock_merge.assert_called_once_with(162)
 
@@ -230,13 +242,16 @@ class TestResumeRebuild(unittest.TestCase):
                 return main_ref
             return {}
 
-        with unittest.mock.patch.object(land, "api", side_effect=fake_api) as mock_api, \
-             unittest.mock.patch.object(land, "gh", return_value=json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": "newsha"}}}})):
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=fake_api) as mock_api,
+            unittest.mock.patch.object(
+                land, "gh", return_value=json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": "newsha"}}}})
+            ),
+        ):
             with self.assertRaises(SystemExit):
                 land.rebuild(pr, "headsha")
             patch_calls = [
-                c for c in mock_api.call_args_list
-                if len(c.args) > 1 and "--method" in c.args and "PATCH" in c.args
+                c for c in mock_api.call_args_list if len(c.args) > 1 and "--method" in c.args and "PATCH" in c.args
             ]
             self.assertEqual(patch_calls, [])
 
@@ -281,11 +296,13 @@ class TestResumeRebuild(unittest.TestCase):
                 return json.dumps(view)
             raise AssertionError(f"unexpected gh call during CLEAN PR resume: {args}")
 
-        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
-             unittest.mock.patch.object(land, "gh", side_effect=fake_gh), \
-             unittest.mock.patch.object(land, "rebuild") as mock_rebuild, \
-             unittest.mock.patch.object(land, "approve_and_wait") as mock_approve, \
-             unittest.mock.patch.object(land, "merge_when_clean") as mock_merge:
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=fake_api),
+            unittest.mock.patch.object(land, "gh", side_effect=fake_gh),
+            unittest.mock.patch.object(land, "rebuild") as mock_rebuild,
+            unittest.mock.patch.object(land, "approve_and_wait") as mock_approve,
+            unittest.mock.patch.object(land, "merge_when_clean") as mock_merge,
+        ):
             land.resume()
 
             mock_rebuild.assert_not_called()
@@ -309,8 +326,10 @@ class TestResumeRebuild(unittest.TestCase):
                 return {}
             raise AssertionError(f"unexpected api call: {path}")
 
-        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
-             unittest.mock.patch.object(land, "signed_commit", return_value="rebuilt_commit_oid") as mock_commit:
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=fake_api),
+            unittest.mock.patch.object(land, "signed_commit", return_value="rebuilt_commit_oid") as mock_commit,
+        ):
             result = land.rebuild(pr, "old_head_sha")
             self.assertEqual(result, "rebuilt_commit_oid")
             mock_commit.assert_called_once()
@@ -328,12 +347,14 @@ class TestResumeRebuild(unittest.TestCase):
         run = {"id": 42, "status": "in_progress", "conclusion": "action_required", "html_url": "http://run/42"}
         jobs = [{"name": "test", "status": "completed", "conclusion": "success"}]
 
-        with unittest.mock.patch.object(land, "api", side_effect=fake_api), \
-             unittest.mock.patch.object(land.time, "sleep") as mock_sleep, \
-             unittest.mock.patch.object(land, "gh") as mock_gh, \
-             unittest.mock.patch.object(land, "refusal", return_value=None) as mock_refusal, \
-             unittest.mock.patch.object(land, "pull_request_runs", return_value=[run]) as mock_runs, \
-             unittest.mock.patch.object(land, "run_jobs", return_value=jobs):
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=fake_api),
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+            unittest.mock.patch.object(land, "gh") as mock_gh,
+            unittest.mock.patch.object(land, "refusal", return_value=None) as mock_refusal,
+            unittest.mock.patch.object(land, "pull_request_runs", return_value=[run]) as mock_runs,
+            unittest.mock.patch.object(land, "run_jobs", return_value=jobs),
+        ):
             land.approve_and_wait(162, started="2026-10-23T00:00:00Z", sha="newsha")
 
             mock_sleep.assert_called_with(land.PAUSE)
@@ -341,15 +362,15 @@ class TestResumeRebuild(unittest.TestCase):
             mock_runs.assert_called_with("newsha")
             for c in mock_runs.call_args_list:
                 self.assertEqual(c[0][0], "newsha")
-            mock_gh.assert_called_once_with(
-                "api", "--method", "POST", f"repos/{land.REPO}/actions/runs/42/approve"
-            )
+            mock_gh.assert_called_once_with("api", "--method", "POST", f"repos/{land.REPO}/actions/runs/42/approve")
 
     def test_approve_and_wait_sha_never_appears_raises_system_exit(self):
         stale_pr = {"number": 162, "head": {"sha": "stalesha"}}
-        with unittest.mock.patch.object(land, "POLLS", 3), \
-             unittest.mock.patch.object(land, "api", return_value=stale_pr) as mock_api, \
-             unittest.mock.patch.object(land.time, "sleep") as mock_sleep:
+        with (
+            unittest.mock.patch.object(land, "POLLS", 3),
+            unittest.mock.patch.object(land, "api", return_value=stale_pr) as mock_api,
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+        ):
             with self.assertRaises(SystemExit) as ctx:
                 land.approve_and_wait(162, started="2026-10-23T00:00:00Z", sha="newsha")
             self.assertIn("PR #162: head is stalesha, not the rebuilt newsha", str(ctx.exception))
@@ -359,13 +380,15 @@ class TestResumeRebuild(unittest.TestCase):
     def _wait(self, run_states):
         pr = {"number": 7, "head": {"sha": "abc"}}
         runs = [[dict(state, id=9, html_url="http://run/9")] for state in run_states]
-        with unittest.mock.patch.object(land, "POLLS", 3), \
-             unittest.mock.patch.object(land, "api", return_value=pr), \
-             unittest.mock.patch.object(land.time, "sleep"), \
-             unittest.mock.patch.object(land, "gh"), \
-             unittest.mock.patch.object(land, "refusal", return_value=None), \
-             unittest.mock.patch.object(land, "pull_request_runs", side_effect=runs), \
-             unittest.mock.patch.object(land, "run_jobs", return_value=[]):
+        with (
+            unittest.mock.patch.object(land, "POLLS", 3),
+            unittest.mock.patch.object(land, "api", return_value=pr),
+            unittest.mock.patch.object(land.time, "sleep"),
+            unittest.mock.patch.object(land, "gh"),
+            unittest.mock.patch.object(land, "refusal", return_value=None),
+            unittest.mock.patch.object(land, "pull_request_runs", side_effect=runs),
+            unittest.mock.patch.object(land, "run_jobs", return_value=[]),
+        ):
             land.approve_and_wait(7, started="2026-10-23T00:00:00Z")
 
     def test_approval_that_never_takes_names_action_required(self):
