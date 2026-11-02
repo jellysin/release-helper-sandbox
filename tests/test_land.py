@@ -403,5 +403,39 @@ class TestResumeRebuild(unittest.TestCase):
         self._wait([waiting, waiting, done])
 
 
+class TestWaitForRun(unittest.TestCase):
+    def test_wait_for_run_empty_poll_then_success(self):
+        run_success = {
+            "id": 42,
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "http://run/42",
+        }
+        jobs = [{"name": "CI", "status": "completed", "conclusion": "success"}]
+        with (
+            unittest.mock.patch.object(land, "pull_request_runs", side_effect=[[], [run_success]]) as mock_runs,
+            unittest.mock.patch.object(land, "run_jobs", return_value=jobs) as mock_jobs,
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+            unittest.mock.patch("builtins.print") as mock_print,
+        ):
+            land.wait_for_run(7, "abc")
+            self.assertEqual(mock_runs.call_count, 2)
+            mock_jobs.assert_called_once_with(42)
+            mock_sleep.assert_called_once_with(land.PAUSE)
+            mock_print.assert_called_once()
+            self.assertIn("CI success", mock_print.call_args[0][0])
+
+    def test_wait_for_run_all_empty_raises_system_exit(self):
+        with (
+            unittest.mock.patch.object(land, "POLLS", 3),
+            unittest.mock.patch.object(land, "pull_request_runs", return_value=[]),
+            unittest.mock.patch.object(land.time, "sleep") as mock_sleep,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                land.wait_for_run(7, "abc")
+            self.assertIn("PR #7: CI on abc did not finish in time", str(ctx.exception))
+            self.assertEqual(mock_sleep.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

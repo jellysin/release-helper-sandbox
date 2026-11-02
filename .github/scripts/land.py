@@ -135,7 +135,11 @@ def wait_for_run(number, sha):
     """Wait for the PR's CI run to succeed, bounded."""
     state = "pending"
     for _ in range(POLLS):
-        run = pull_request_runs(sha)[0]
+        runs = pull_request_runs(sha)
+        if not runs:
+            time.sleep(PAUSE)
+            continue
+        run = runs[0]
         jobs = run_jobs(run["id"])
         state = ci_state(run, jobs)
         if state == "success":

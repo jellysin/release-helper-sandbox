@@ -16,14 +16,14 @@ all: build
 verify-all: compile-context-verify caveman-sources audit lint test
 
 bootstrap:
-	$(if $(filter .venv %/.venv,$(DEV_VENV)),,$(error DEV_VENV must name a .venv directory, not $(DEV_VENV)))
-	@python3 -m venv --clear $(DEV_VENV)
-	@$(PYTHON) -m pip install --quiet --timeout 60 --require-hashes -r requirements-dev.txt
-	@cp requirements-dev.txt $(DEV_VENV)/requirements-dev.txt
+	@case "$(DEV_VENV)" in .venv|*/.venv) ;; *) echo "DEV_VENV must name a .venv directory, not $(DEV_VENV)" >&2; exit 1;; esac
+	@python3 -m venv --clear "$(DEV_VENV)"
+	@"$(PYTHON)" -m pip install --quiet --timeout 60 --require-hashes -r requirements-dev.txt
+	@cp requirements-dev.txt "$(DEV_VENV)/requirements-dev.txt"
 
 python-env:
-	@test -x $(PYTHON) || { echo "$(PYTHON) is missing: run 'make bootstrap'" >&2; exit 1; }
-	@cmp -s requirements-dev.txt $(DEV_VENV)/requirements-dev.txt || \
+	@test -x "$(PYTHON)" || { echo "$(PYTHON) is missing: run 'make bootstrap'" >&2; exit 1; }
+	@cmp -s requirements-dev.txt "$(DEV_VENV)/requirements-dev.txt" || \
 		{ echo "$(DEV_VENV) does not match requirements-dev.txt: run 'make bootstrap'" >&2; exit 1; }
 
 compile-context:
@@ -39,8 +39,8 @@ audit:
 	@$(PRAETORCTL) audit
 
 lint: python-env
-	@$(PYTHON) -m ruff check .
-	@$(PYTHON) -m ruff format --check .
+	@"$(PYTHON)" -m ruff check .
+	@"$(PYTHON)" -m ruff format --check .
 
 # The sandbox's verification is its release cycle against the forge (.github/workflows/cycle.yml);
 # locally the workflows and the cycle's scripts are linted.
