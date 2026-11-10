@@ -271,6 +271,7 @@ class TestResumeRebuild(unittest.TestCase):
                 land.rebuild(pr, "headsha")
 
     def test_clean_or_blocked_pr_with_both_runs_no_rebuild(self):
+        """Verify resume leaves a CLEAN or BLOCKED PR whose head has both runs unrebuilt."""
         pr = {
             "number": 162,
             "title": "fix: cycle test",
@@ -321,6 +322,7 @@ class TestResumeRebuild(unittest.TestCase):
                     mock_merge.assert_called_once_with(162)
 
     def test_blocked_pr_missing_codeql_rebuilds_once(self):
+        """Verify resume rebuilds a BLOCKED PR whose head lacks a CodeQL run, once, and names it."""
         pr = make_candidate_pr()
         run = {
             "path": ".github/workflows/cycle.yml",
@@ -699,9 +701,11 @@ class TestWaitForRun(unittest.TestCase):
 class TestPullRequestRuns(unittest.TestCase):
     @staticmethod
     def make_run(run_id, path=".github/workflows/ci.yml", **changes):
+        """Build a pull_request run for testsha on path, with the given fields changed."""
         return {"id": run_id, "path": path, "head_sha": "testsha", "event": "pull_request", **changes}
 
     def test_unfiltered_workflow_endpoints_and_newest_id(self):
+        """Verify one unfiltered call per workflow, in PR_WORKFLOWS order, keeping the newest id."""
         ci, codeql = land.PR_WORKFLOWS
         pages = [
             {"total_count": 3, "workflow_runs": [self.make_run(20), self.make_run(10), self.make_run(99, codeql)]},
@@ -723,6 +727,7 @@ class TestPullRequestRuns(unittest.TestCase):
         self.assertEqual([run["path"] for run in runs], list(land.PR_WORKFLOWS))
 
     def test_filters_foreign_head_sha(self):
+        """Verify runs of another or no head_sha are dropped."""
         page = {
             "workflow_runs": [
                 self.make_run(10),
@@ -734,6 +739,7 @@ class TestPullRequestRuns(unittest.TestCase):
             self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
 
     def test_filters_non_pull_request_events(self):
+        """Verify push and schedule runs are dropped."""
         page = {
             "workflow_runs": [self.make_run(10), self.make_run(99, event="push"), self.make_run(100, event="schedule")]
         }
@@ -741,26 +747,31 @@ class TestPullRequestRuns(unittest.TestCase):
             self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
 
     def test_filters_foreign_path(self):
+        """Verify runs of a workflow outside PR_WORKFLOWS are dropped."""
         page = {"workflow_runs": [self.make_run(10), self.make_run(99, ".github/workflows/other.yml")]}
         with unittest.mock.patch.object(land, "api", return_value=page):
             self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
 
     def test_missing_workflow_absent_from_result(self):
+        """Verify a workflow without a matching run is absent from the result."""
         pages = [{"workflow_runs": [self.make_run(10)]}, {"workflow_runs": []}]
         with unittest.mock.patch.object(land, "api", side_effect=pages):
             self.assertEqual(land.pull_request_runs("testsha"), [self.make_run(10)])
 
     def test_missing_workflows_in_allow_list_order(self):
+        """Verify missing_workflows lists every absent path in PR_WORKFLOWS order."""
         with unittest.mock.patch.object(land, "pull_request_runs", return_value=[]) as runs:
             self.assertEqual(land.missing_workflows("testsha"), list(land.PR_WORKFLOWS))
         runs.assert_called_once_with("testsha")
 
     def test_accepts_exactly_run_page(self):
+        """Verify a page of exactly RUN_PAGE runs is accepted."""
         page = {"total_count": 1000, "workflow_runs": [self.make_run(i) for i in range(land.RUN_PAGE)]}
         with unittest.mock.patch.object(land, "api", return_value=page):
             self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [land.RUN_PAGE - 1])
 
     def test_refuses_more_than_run_page(self):
+        """Verify a page longer than RUN_PAGE is refused on either workflow."""
         page = {"total_count": 1000, "workflow_runs": [self.make_run(i) for i in range(land.RUN_PAGE + 1)]}
         for pages in ([page], [{"workflow_runs": []}, page]):
             with self.subTest(page=len(pages)), unittest.mock.patch.object(land, "api", side_effect=pages):
@@ -768,6 +779,7 @@ class TestPullRequestRuns(unittest.TestCase):
                     land.pull_request_runs("testsha")
 
     def test_pr404_unfiltered_pages_recover_both_action_required_runs(self):
+        """Verify both PR #404 action_required runs come back where the filtered list held CI only."""
         sha = "0eeb7954944f1d8568e6302064c0a351c21de85f"
         ci = self.make_run(42712679106, head_sha=sha, conclusion="action_required")
         codeql = self.make_run(42712678951, land.PR_WORKFLOWS[1], head_sha=sha, conclusion="action_required")
