@@ -43,6 +43,8 @@ ALLOWED = {
     "catalog/manifest.json",
 }
 POLLS, PAUSE = 60, 10  # at most ten minutes for each wait
+# Newest runs read per workflow; a run older than this page counts as not appeared (fail closed).
+RUN_PAGE = 100
 RUN_POLLS = 120  # twenty minutes: codeql.yml's timeout-minutes
 # Leftover cycle PRs one resume settles; more stops the cycle. Bounded so the waits fit the job timeout.
 MAX_LEFTOVERS = 2
@@ -139,17 +141,28 @@ def refusal(pr, started):
 
 
 def pull_request_runs(sha):
-    """Return the newest pull_request run of each allow-listed workflow for the commit, in PR_WORKFLOWS order."""
-    data = api(f"repos/{REPO}/actions/runs?event=pull_request&head_sha={sha}&per_page=20")
-    if data["total_count"] > 20:
-        raise SystemExit(f"commit {sha} has {data['total_count']} runs, more than one page")
+    """Return newest pull_request runs for sha, in PR_WORKFLOWS order, from unfiltered pages.
+
+    Forge filtered run lists persistently missed run 42712678951 on 2026-11-10;
+    the unfiltered list held it. Filter the newest page locally instead.
+    """
     best_by_path = {}
-    for run in data["workflow_runs"]:
-        path = run.get("path")
-        if path in PR_WORKFLOWS:
+    for path in PR_WORKFLOWS:
+        data = api(f"repos/{REPO}/actions/workflows/{Path(path).name}/runs?per_page={RUN_PAGE}")
+        if len(data["workflow_runs"]) > RUN_PAGE:
+            raise SystemExit(f"workflow {path} returned {len(data['workflow_runs'])} runs, more than one page")
+        for run in data["workflow_runs"]:
+            if run.get("head_sha") != sha or run.get("event") != "pull_request" or run.get("path") != path:
+                continue
             if path not in best_by_path or run["id"] > best_by_path[path]["id"]:
                 best_by_path[path] = run
     return [best_by_path[path] for path in PR_WORKFLOWS if path in best_by_path]
+
+
+def missing_workflows(sha):
+    """Return allow-listed workflow paths without a pull_request run for sha."""
+    present = {run["path"] for run in pull_request_runs(sha)}
+    return [path for path in PR_WORKFLOWS if path not in present]
 
 
 def wait_for_head(number, sha):
@@ -337,7 +350,14 @@ def resume():
         if not run["path"].endswith(".github/workflows/cycle.yml") or run["repository"]["full_name"] != REPO:
             raise SystemExit(f"PR #{pr['number']}: run {cycle_id} is not a cycle.yml run in {REPO}")
         view = json.loads(gh("pr", "view", str(pr["number"]), "--json", "mergeStateStatus,headRefOid"))
-        head = rebuild(pr, view["headRefOid"]) if view.get("mergeStateStatus") in ("BEHIND", "DIRTY") else None
+        missing = missing_workflows(view["headRefOid"])
+        head = None
+        if view.get("mergeStateStatus") in ("BEHIND", "DIRTY") or missing:
+            if missing:
+                print(
+                    f"PR #{pr['number']}: missing pull_request runs for {view['headRefOid']}: {', '.join(missing)}; rebuilding"
+                )
+            head = rebuild(pr, view["headRefOid"])
         # created_at is the earlier cycle's first start; a re-run moves run_started_at past its commit.
         started = run["created_at"]
         approve_and_wait(pr["number"], started=started, sha=head)
