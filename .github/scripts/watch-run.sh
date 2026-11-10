@@ -4,14 +4,8 @@
 set -euo pipefail
 workflow="$1"
 title="$2"
-run=""
-for _ in $(seq 1 24); do
-  run="$(gh run list --workflow "$workflow" --event workflow_dispatch --limit 20 \
-    --json databaseId,displayTitle --jq "[.[] | select(.displayTitle == \"$title\")][0].databaseId // empty")"
-  [[ -n "$run" ]] && break
-  sleep 5
-done
-[[ -n "$run" ]] || { echo "no $workflow run named '$title' appeared" >&2; exit 1; }
+run="$("$(dirname "$0")/find-run.sh" "$workflow" displayTitle "$title")"
 echo "$workflow run $run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"
-gh run watch "$run" --exit-status --interval 10 > /dev/null
-gh run view "$run" --json conclusion --jq '"concluded: \(.conclusion)"'
+conclusion="$("$(dirname "$0")/wait-run.sh" "$run")"
+echo "concluded: $conclusion"
+[[ "$conclusion" == success ]]
