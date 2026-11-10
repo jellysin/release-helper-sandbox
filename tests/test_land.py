@@ -217,6 +217,7 @@ class TestResumeRebuild(unittest.TestCase):
         with (
             unittest.mock.patch.object(land, "api", side_effect=fake_api),
             unittest.mock.patch.object(land, "gh", side_effect=fake_gh),
+            unittest.mock.patch.object(land, "pull_request_runs", return_value=[]),
             unittest.mock.patch.object(land, "approve_and_wait") as mock_approve,
             unittest.mock.patch.object(land, "merge_when_clean") as mock_merge,
         ):
@@ -269,7 +270,8 @@ class TestResumeRebuild(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 land.rebuild(pr, "headsha")
 
-    def test_clean_pr_no_rebuild(self):
+    def test_clean_or_blocked_pr_with_both_runs_no_rebuild(self):
+        """Verify resume leaves a CLEAN or BLOCKED PR whose head has both runs unrebuilt."""
         pr = {
             "number": 162,
             "title": "fix: cycle test",
@@ -302,15 +304,50 @@ class TestResumeRebuild(unittest.TestCase):
         with (
             unittest.mock.patch.object(land, "api", side_effect=fake_api),
             unittest.mock.patch.object(land, "gh", side_effect=fake_gh),
+            unittest.mock.patch.object(
+                land, "pull_request_runs", return_value=[{"path": p} for p in land.PR_WORKFLOWS]
+            ),
             unittest.mock.patch.object(land, "rebuild") as mock_rebuild,
             unittest.mock.patch.object(land, "approve_and_wait") as mock_approve,
             unittest.mock.patch.object(land, "merge_when_clean") as mock_merge,
         ):
-            land.resume()
+            for state in ("CLEAN", "BLOCKED"):
+                with self.subTest(state=state):
+                    view["mergeStateStatus"] = state
+                    mock_approve.reset_mock()
+                    mock_merge.reset_mock()
+                    land.resume()
+                    mock_rebuild.assert_not_called()
+                    mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha=None)
+                    mock_merge.assert_called_once_with(162)
 
-            mock_rebuild.assert_not_called()
-            mock_approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha=None)
-            mock_merge.assert_called_once_with(162)
+    def test_blocked_pr_missing_codeql_rebuilds_once(self):
+        """Verify resume rebuilds a BLOCKED PR whose head lacks a CodeQL run, once, and names it."""
+        pr = make_candidate_pr()
+        run = {
+            "path": ".github/workflows/cycle.yml",
+            "repository": {"full_name": land.REPO},
+            "created_at": "2026-10-23T00:00:00Z",
+        }
+        view = {"mergeStateStatus": "BLOCKED", "headRefOid": "headsha123"}
+        with (
+            unittest.mock.patch.object(land, "api", side_effect=[[pr], run]),
+            unittest.mock.patch.object(land, "gh", return_value=json.dumps(view)),
+            unittest.mock.patch.object(
+                land, "pull_request_runs", return_value=[{"path": land.PR_WORKFLOWS[0]}]
+            ) as runs,
+            unittest.mock.patch.object(land, "rebuild", return_value="rebuiltsha") as rebuild,
+            unittest.mock.patch.object(land, "approve_and_wait") as approve,
+            unittest.mock.patch.object(land, "merge_when_clean") as merge,
+            unittest.mock.patch("builtins.print") as output,
+        ):
+            land.resume()
+        runs.assert_called_once_with("headsha123")
+        rebuild.assert_called_once_with(pr, "headsha123")
+        approve.assert_called_once_with(162, started="2026-10-23T00:00:00Z", sha="rebuiltsha")
+        merge.assert_called_once_with(162)
+        messages = [call.args[0] for call in output.call_args_list]
+        self.assertTrue(any("PR #162" in msg and "codeql.yml" in msg and "headsha123" in msg for msg in messages))
 
     def test_rebuild_returns_signed_commit_oid(self):
         pr = make_candidate_pr(title="feat: rebuild test")
@@ -662,42 +699,100 @@ class TestWaitForRun(unittest.TestCase):
 
 
 class TestPullRequestRuns(unittest.TestCase):
-    def test_pull_request_runs_filters_foreign_paths_and_picks_newest_id(self):
-        """Verify pull_request_runs filters unlisted workflows and retains latest run per path."""
-        page = {
-            "total_count": 4,
-            "workflow_runs": [
-                {"id": 10, "path": ".github/workflows/ci.yml"},
-                {"id": 20, "path": ".github/workflows/ci.yml"},
-                {"id": 5, "path": ".github/workflows/codeql.yml"},
-                {"id": 99, "path": ".github/workflows/other.yml"},
+    @staticmethod
+    def make_run(run_id, path=".github/workflows/ci.yml", **changes):
+        """Build a pull_request run for testsha on path, with the given fields changed."""
+        return {"id": run_id, "path": path, "head_sha": "testsha", "event": "pull_request", **changes}
+
+    def test_unfiltered_workflow_endpoints_and_newest_id(self):
+        """Verify one unfiltered call per workflow, in PR_WORKFLOWS order, keeping the newest id."""
+        ci, codeql = land.PR_WORKFLOWS
+        pages = [
+            {"total_count": 3, "workflow_runs": [self.make_run(20), self.make_run(10), self.make_run(99, codeql)]},
+            {
+                "total_count": 3,
+                "workflow_runs": [self.make_run(5, codeql), self.make_run(4, codeql), self.make_run(99)],
+            },
+        ]
+        with unittest.mock.patch.object(land, "api", side_effect=pages) as api:
+            runs = land.pull_request_runs("testsha")
+        self.assertEqual(
+            api.call_args_list,
+            [
+                unittest.mock.call(f"repos/{land.REPO}/actions/workflows/ci.yml/runs?per_page=100"),
+                unittest.mock.call(f"repos/{land.REPO}/actions/workflows/codeql.yml/runs?per_page=100"),
             ],
+        )
+        self.assertEqual([run["id"] for run in runs], [20, 5])
+        self.assertEqual([run["path"] for run in runs], list(land.PR_WORKFLOWS))
+
+    def test_filters_foreign_head_sha(self):
+        """Verify runs of another or no head_sha are dropped."""
+        page = {
+            "workflow_runs": [
+                self.make_run(10),
+                self.make_run(99, head_sha="foreign"),
+                self.make_run(100, head_sha=None),
+            ]
         }
-        with unittest.mock.patch.object(land, "api", return_value=page) as mock_api:
-            runs = land.pull_request_runs("testsha")
-            mock_api.assert_called_once_with(
-                f"repos/{land.REPO}/actions/runs?event=pull_request&head_sha=testsha&per_page=20"
-            )
-            self.assertEqual([r["id"] for r in runs], [20, 5])
-            self.assertEqual(
-                [r["path"] for r in runs],
-                [".github/workflows/ci.yml", ".github/workflows/codeql.yml"],
-            )
-
-    def test_pull_request_runs_accepts_twenty_runs(self):
-        """Verify pull_request_runs accepts exactly 20 runs as a complete single page."""
-        page = {"total_count": 20, "workflow_runs": []}
         with unittest.mock.patch.object(land, "api", return_value=page):
-            runs = land.pull_request_runs("testsha")
-            self.assertEqual(runs, [])
+            self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
 
-    def test_pull_request_runs_refuses_twenty_one_runs(self):
-        """Verify pull_request_runs refuses 21 runs as exceeding one page."""
-        page = {"total_count": 21, "workflow_runs": []}
+    def test_filters_non_pull_request_events(self):
+        """Verify push and schedule runs are dropped."""
+        page = {
+            "workflow_runs": [self.make_run(10), self.make_run(99, event="push"), self.make_run(100, event="schedule")]
+        }
         with unittest.mock.patch.object(land, "api", return_value=page):
-            with self.assertRaises(SystemExit) as ctx:
-                land.pull_request_runs("testsha")
-            self.assertIn("more than one page", str(ctx.exception))
+            self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
+
+    def test_filters_foreign_path(self):
+        """Verify runs of a workflow outside PR_WORKFLOWS are dropped."""
+        page = {"workflow_runs": [self.make_run(10), self.make_run(99, ".github/workflows/other.yml")]}
+        with unittest.mock.patch.object(land, "api", return_value=page):
+            self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [10])
+
+    def test_missing_workflow_absent_from_result(self):
+        """Verify a workflow without a matching run is absent from the result."""
+        pages = [{"workflow_runs": [self.make_run(10)]}, {"workflow_runs": []}]
+        with unittest.mock.patch.object(land, "api", side_effect=pages):
+            self.assertEqual(land.pull_request_runs("testsha"), [self.make_run(10)])
+
+    def test_missing_workflows_in_allow_list_order(self):
+        """Verify missing_workflows lists every absent path in PR_WORKFLOWS order."""
+        with unittest.mock.patch.object(land, "pull_request_runs", return_value=[]) as runs:
+            self.assertEqual(land.missing_workflows("testsha"), list(land.PR_WORKFLOWS))
+        runs.assert_called_once_with("testsha")
+
+    def test_accepts_exactly_run_page(self):
+        """Verify a page of exactly RUN_PAGE runs is accepted."""
+        page = {"total_count": 1000, "workflow_runs": [self.make_run(i) for i in range(land.RUN_PAGE)]}
+        with unittest.mock.patch.object(land, "api", return_value=page):
+            self.assertEqual([run["id"] for run in land.pull_request_runs("testsha")], [land.RUN_PAGE - 1])
+
+    def test_refuses_more_than_run_page(self):
+        """Verify a page longer than RUN_PAGE is refused on either workflow."""
+        page = {"total_count": 1000, "workflow_runs": [self.make_run(i) for i in range(land.RUN_PAGE + 1)]}
+        for pages in ([page], [{"workflow_runs": []}, page]):
+            with self.subTest(page=len(pages)), unittest.mock.patch.object(land, "api", side_effect=pages):
+                with self.assertRaisesRegex(SystemExit, "more than one page"):
+                    land.pull_request_runs("testsha")
+
+    def test_pr404_unfiltered_pages_recover_both_action_required_runs(self):
+        """Verify both PR #404 action_required runs come back where the filtered list held CI only."""
+        sha = "0eeb7954944f1d8568e6302064c0a351c21de85f"
+        ci = self.make_run(42712679106, head_sha=sha, conclusion="action_required")
+        codeql = self.make_run(42712678951, land.PR_WORKFLOWS[1], head_sha=sha, conclusion="action_required")
+        pages = {
+            f"repos/{land.REPO}/actions/workflows/ci.yml/runs?per_page=100": {"workflow_runs": [ci]},
+            f"repos/{land.REPO}/actions/workflows/codeql.yml/runs?per_page=100": {"workflow_runs": [codeql]},
+            f"repos/{land.REPO}/actions/runs?event=pull_request&head_sha={sha}&per_page=20": {
+                "total_count": 1,
+                "workflow_runs": [ci],
+            },
+        }
+        with unittest.mock.patch.object(land, "api", side_effect=pages.__getitem__):
+            self.assertEqual(land.pull_request_runs(sha), [ci, codeql])
 
 
 class TestApproveBothRuns(unittest.TestCase):
@@ -740,16 +835,17 @@ class TestApproveBothRuns(unittest.TestCase):
     def test_approve_and_wait_delegates_to_wait_for_run_without_approving(self):
         """Verify approve_and_wait delegates to wait_for_run without its own approve loop."""
         pr = {"number": 88, "head": {"sha": "sha88"}}
-        run_ci = {"id": 101, "path": ".github/workflows/ci.yml"}
-        run_codeql = {"id": 102, "path": ".github/workflows/codeql.yml"}
-        runs_payload = {"total_count": 2, "workflow_runs": [run_ci, run_codeql]}
+        run_ci = {"id": 101, "path": ".github/workflows/ci.yml", "head_sha": "sha88", "event": "pull_request"}
+        run_codeql = {"id": 102, "path": ".github/workflows/codeql.yml", "head_sha": "sha88", "event": "pull_request"}
 
         def fake_api(path, *args, **kwargs):
             """Return mock PR or runs payload for requested path."""
             if path == f"repos/{land.REPO}/pulls/88":
                 return pr
-            if "actions/runs?" in path:
-                return runs_payload
+            if path == f"repos/{land.REPO}/actions/workflows/ci.yml/runs?per_page=100":
+                return {"workflow_runs": [run_ci]}
+            if path == f"repos/{land.REPO}/actions/workflows/codeql.yml/runs?per_page=100":
+                return {"workflow_runs": [run_codeql]}
             raise AssertionError(f"unexpected api call: {path}")
 
         with (
