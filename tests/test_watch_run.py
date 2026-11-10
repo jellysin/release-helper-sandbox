@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -203,6 +204,159 @@ class TestRunScripts(unittest.TestCase):
         self.assertIn("gh run view 123 failed 3 times in a row\n", result.stderr)
         self.assertNotIn("concluded:", result.stdout)
         self.assertEqual(calls, [LIST] + [VIEW] * 3)
+
+
+@unittest.skipUnless(BASH, "bash is not on PATH; shell scripts require bash")
+class TestMergeStep(unittest.TestCase):
+    """Execute the release PR merge step with replayed forge responses."""
+
+    BRANCH = "release-please--branches--main"
+    COMMIT = "0123456789abcdef0123456789abcdef01234567"
+    FAILURE = (0, "completed failure\n", "")
+    RERUN = ["run", "rerun", "55", "--failed"]
+    MERGE = [".github/scripts/land.py", "merge", "408"]
+    write_executable = TestRunScripts.write_executable
+
+    def setUp(self):
+        """Reuse replay stubs and copy the executable waiter into an isolated cwd."""
+        TestRunScripts.setUp(self)
+        scripts = self.directory / ".github" / "scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(SCRIPTS / "wait-run.sh", scripts / "wait-run.sh")
+        stub = f"#!{sys.executable}\n" + textwrap.dedent("""\
+            import json
+            import sys
+            from pathlib import Path
+
+            command = Path(sys.argv[0])
+            with command.with_suffix(".jsonl").open("a") as stream:
+                stream.write(json.dumps(sys.argv[1:]) + "\\n")
+            if command.name == "git" and sys.argv[1] == "show":
+                sys.stdout.write("0.1.125\\n")
+            """)
+        for name in ("git", "python3"):
+            self.write_executable(name, stub)
+            (self.directory / f"{name}.jsonl").write_text("")
+        self.output = self.directory / "output"
+        self.output.write_text("")
+        self.environment.update(NUMBER="408", GITHUB_OUTPUT=str(self.output))
+
+    def merge_block(self):
+        """Extract the named step's literal run block using indentation alone."""
+        name = "Merge the release PR when CLEAN and read the version it records"
+        lines = (ROOT / ".github" / "workflows" / "cycle.yml").read_text().splitlines()
+        start = next((index for index, line in enumerate(lines) if line.strip() == f"- name: {name}"), None)
+        self.assertIsNotNone(start, "merge step not found")
+        step_indent = len(lines[start]) - len(lines[start].lstrip())
+        block = []
+        run_indent = None
+        for line in lines[start + 1 :]:
+            indent = len(line) - len(line.lstrip())
+            if line.strip() and indent <= step_indent:
+                break
+            if run_indent is None:
+                if line.strip() == "run: |":
+                    run_indent = indent
+            elif line.strip() and indent <= run_indent:
+                break
+            else:
+                block.append(line)
+        self.assertIsNotNone(run_indent, "merge step run block not found")
+        script = textwrap.dedent("\n".join(block))
+        self.assertTrue(script.strip(), "merge step run block is empty")
+        return script
+
+    def replay(self, waits, rerun=False):
+        """Run the real block with strict bash and return its recorded argv lists."""
+        answers = [(0, "", ""), (0, f"{self.BRANCH}\n", ""), (0, "55\n", "")]
+        answers.append(waits[0])
+        if rerun:
+            answers.append((0, "", ""))
+        answers.extend(waits[1:])
+        answers.append((0, f"{self.COMMIT}\n", ""))
+        (self.directory / "answers.json").write_text(json.dumps(answers))
+        (self.directory / "calls.jsonl").write_text("")
+        result = subprocess.run(
+            [BASH, "-e", "-o", "pipefail", "-c", self.merge_block()],
+            cwd=self.directory,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        gh = list(map(json.loads, (self.directory / "calls.jsonl").read_text().splitlines()))
+        python = list(map(json.loads, (self.directory / "python3.jsonl").read_text().splitlines()))
+        git = list(map(json.loads, (self.directory / "git.jsonl").read_text().splitlines()))
+        self.assertNotIn("unexpected gh call", result.stderr)
+        return result, gh, python, git
+
+    def assert_merged(self, result, python, git):
+        """Require one merge invocation and version outputs from the recorded commit."""
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(python, [self.MERGE])
+        self.assertEqual(git, [["fetch", "--quiet", "origin", "main"], ["show", f"{self.COMMIT}:version.txt"]])
+        self.assertEqual(self.output.read_text().splitlines(), ["tag=v0.1.125", f"commit={self.COMMIT}"])
+
+    def test_first_wait_success(self):
+        """Merge immediately after successful dispatched CI without rerunning it."""
+        result, gh, python, git = self.replay([SUCCESS])
+        self.assert_merged(result, python, git)
+        self.assertEqual(result.stderr, "")
+        self.assertNotIn(self.RERUN, gh)
+        self.assertEqual(
+            gh,
+            [
+                ["pr", "edit", "408", "--add-label", "release-ready"],
+                ["pr", "view", "408", "--json", "headRefName", "--jq", ".headRefName"],
+                [
+                    "run",
+                    "list",
+                    "--workflow",
+                    "ci.yml",
+                    "--event",
+                    "workflow_dispatch",
+                    "--branch",
+                    self.BRANCH,
+                    "--limit",
+                    "1",
+                    "--json",
+                    "databaseId",
+                    "--jq",
+                    ".[0].databaseId // empty",
+                ],
+                ["run", "view", "55", *VIEW[3:]],
+                ["pr", "view", "408", "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
+            ],
+        )
+
+    def test_rerun_success(self):
+        """Rerun failed jobs exactly once and merge only after their success."""
+        result, gh, python, git = self.replay([self.FAILURE, SUCCESS], rerun=True)
+        self.assert_merged(result, python, git)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(gh.count(self.RERUN), 1)
+        self.assertEqual(gh[3:6], [["run", "view", "55", *VIEW[3:]], self.RERUN, ["run", "view", "55", *VIEW[3:]]])
+        self.assertEqual(len(gh), 7)
+
+    def test_rerun_fails_again(self):
+        """Stop before merging or any further forge call when rerun CI fails again."""
+        result, gh, python, git = self.replay([self.FAILURE, self.FAILURE], rerun=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"dispatched CI run 55 on {self.BRANCH}: failure", result.stderr)
+        self.assertEqual(python, [])
+        self.assertEqual(git, [])
+        self.assertEqual(self.output.read_text(), "")
+        self.assertEqual(gh.count(self.RERUN), 1)
+        self.assertEqual(gh[3:], [["run", "view", "55", *VIEW[3:]], self.RERUN, ["run", "view", "55", *VIEW[3:]]])
+
+    def test_transient_read(self):
+        """Let the real waiter recover from a failed read before the merge step proceeds."""
+        result, gh, python, git = self.replay([FAILED_READ, SUCCESS])
+        self.assert_merged(result, python, git)
+        self.assertIn("gh run view 55 failed (1/3 in a row)", result.stderr)
+        self.assertNotIn(self.RERUN, gh)
+        self.assertEqual(gh[3:5], [["run", "view", "55", *VIEW[3:]]] * 2)
+        self.assertEqual(len(gh), 6)
 
 
 class TestWaitPolicy(unittest.TestCase):
