@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.125](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.124...v0.1.125) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cycle:** wait on cycle runs through a poll that survives a failed read ([#409](https://github.com/jellysin/release-helper-sandbox/issues/409)) ([a99e94e](https://github.com/jellysin/release-helper-sandbox/commit/a99e94ef9ea9ccb3e32e94e4e0f40bfdb66651b0))
+* release cycle of release-helper fdc3bacd4a87749466c1af6d25a08fdefb4c500f ([#410](https://github.com/jellysin/release-helper-sandbox/issues/410)) ([306497e](https://github.com/jellysin/release-helper-sandbox/commit/306497e80b3ad5f615a1e75db34699c2d23b978f))
+
 ## [0.1.124](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.123...v0.1.124) (2026-11-10)
 
 
