@@ -76,6 +76,7 @@ class TestRunScripts(unittest.TestCase):
             GITHUB_REPOSITORY="fixture/repository",
             WAIT_SECONDS="1800",
             WAIT_READ_SECONDS="30",
+            FIND_READ_SECONDS="30",
         )
 
     def write_executable(self, name, content):
@@ -242,6 +243,31 @@ class TestRunScripts(unittest.TestCase):
                 ]
             ],
         )
+
+    def test_find_hung_list(self):
+        """Time out a hung list read and find the run on the next poll."""
+        self.environment["FIND_READ_SECONDS"] = "1"
+        started = time.monotonic()
+        result, calls = self.replay(
+            "find-run.sh", [(0, "", "", 5), (0, "123\n", "")], "prepare-release.yml", "displayTitle", "Prepare v1"
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "123\n")
+        self.assertIn("timed out after 1s (poll 1/24)", result.stderr)
+        self.assertLess(elapsed, 4)
+        self.assertEqual(calls, [LIST] * 2)
+
+    def test_find_invalid_read_seconds(self):
+        """Reject zero and nonnumeric list deadlines before invoking gh."""
+        for value in ("0", "x"):
+            with self.subTest(value=value):
+                self.environment["FIND_READ_SECONDS"] = value
+                result, calls = self.replay("find-run.sh", [], "ci.yml", "headSha", "a" * 40)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("usage:", result.stderr.lower())
+                self.assertIn("FIND_READ_SECONDS", result.stderr)
+                self.assertEqual(calls, [])
 
     def test_find_invalid_head_sha(self):
         """Reject head SHAs outside the forty lowercase hexadecimal format."""
@@ -468,6 +494,10 @@ class TestMergeStep(unittest.TestCase):
         self.assertEqual(git, [])
         self.assertEqual(self.output.read_text(), "")
 
+    def test_head_read_has_deadline(self):
+        """Require a thirty-second deadline on the merge step's head read."""
+        self.assertIn('$(timeout 30 gh pr view "$NUMBER" --json headRefName,headRefOid --jq ', self.merge_block())
+
     def test_rerun_success(self):
         """Rerun failed jobs exactly once and merge only after their success."""
         result, gh, python, git = self.replay([self.FAILURE, SUCCESS], rerun=True)
@@ -500,6 +530,19 @@ class TestMergeStep(unittest.TestCase):
 
 class TestWaitPolicy(unittest.TestCase):
     """Guard workflow polling policy without running any shell commands."""
+
+    def test_run_reads_have_deadlines(self):
+        """Allow a run list or view only after timeout or as the start of an echo diagnostic."""
+        read = re.compile(r"\bgh\s+run\s+(?:list|view)\b")
+        allowed = re.compile(r"(?:\btimeout\s+\S+\s+|^\s*echo\s+\")$")
+        for path in sorted(SCRIPTS.glob("*.sh")):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for match in read.finditer(line):
+                    self.assertRegex(
+                        line[: match.start()],
+                        allowed,
+                        f"{path.relative_to(ROOT)}:{number}: run read lacks timeout",
+                    )
 
     def test_no_raw_run_watch(self):
         """Reject unguarded gh watch calls in every workflow and script."""
