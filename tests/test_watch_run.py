@@ -4,10 +4,11 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,7 @@ SUCCESS = (0, "completed success\n", "")
 FAILED_READ = (1, "", "forge read failed\n")
 GH_STUB = """import json
 import sys
+import time
 from pathlib import Path
 
 directory = Path(__file__).parent
@@ -45,7 +47,10 @@ with log.open("a") as stream:
 if index >= len(answers):
     sys.stderr.write("unexpected gh call\\n")
     sys.exit(97)
-code, stdout, stderr = answers[index]
+answer = answers[index]
+code, stdout, stderr = answer[:3]
+if len(answer) == 4:
+    time.sleep(answer[3])
 sys.stdout.write(stdout)
 sys.stderr.write(stderr)
 sys.exit(code)
@@ -53,6 +58,7 @@ sys.exit(code)
 
 
 @unittest.skipUnless(BASH, "bash is not on PATH; shell scripts require bash")
+@unittest.skipUnless(shutil.which("timeout"), "timeout is not on PATH; wait reads require a deadline")
 class TestRunScripts(unittest.TestCase):
     """Execute the shell entry points against file-backed gh and sleep stubs."""
 
@@ -68,6 +74,8 @@ class TestRunScripts(unittest.TestCase):
             PATH=str(self.directory) + os.pathsep + os.environ.get("PATH", ""),
             GITHUB_SERVER_URL="https://github.com",
             GITHUB_REPOSITORY="fixture/repository",
+            WAIT_SECONDS="1800",
+            WAIT_READ_SECONDS="30",
         )
 
     def write_executable(self, name, content):
@@ -81,8 +89,11 @@ class TestRunScripts(unittest.TestCase):
         (self.directory / "answers.json").write_text(json.dumps(answers))
         log = self.directory / "calls.jsonl"
         log.write_text("")
-        result = subprocess.run(
-            [BASH, str(SCRIPTS / script), *arguments],
+        path = (SCRIPTS / script).resolve()
+        self.assertTrue(path.is_file() and path.is_relative_to(SCRIPTS))
+        # Fixed bash from shutil.which, argument list, no shell, repository scripts under test, stub commands on PATH.
+        result = subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            [BASH, str(path), *arguments],
             cwd=self.directory,
             env=self.environment,
             capture_output=True,
@@ -169,8 +180,102 @@ class TestRunScripts(unittest.TestCase):
         result, calls = self.replay("wait-run.sh", [PENDING] * 180 + [SUCCESS], "123")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
-        self.assertEqual(result.stderr, "run 123 did not complete within 180 polls\n")
+        self.assertEqual(result.stderr, "run 123 did not complete within 180 polls or 1800 seconds\n")
         self.assertEqual(calls, [VIEW] * 180)
+
+    def test_wait_hung_read(self):
+        """Time out a hung read and recover within the per-read budget."""
+        self.environment["WAIT_READ_SECONDS"] = "1"
+        started = time.monotonic()
+        result, calls = self.replay("wait-run.sh", [(*PENDING, 5), SUCCESS], "123")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "success\n")
+        self.assertIn("timed out after 1s (1/3 in a row)", result.stderr)
+        self.assertLess(elapsed, 4)
+        self.assertEqual(calls, [VIEW] * 2)
+
+    def test_wait_wall_clock_stop(self):
+        """Stop slow successful reads at the wall-clock budget before poll exhaustion."""
+        self.environment["WAIT_SECONDS"] = "2"
+        result, calls = self.replay("wait-run.sh", [(*PENDING, 1.2)] * 5, "123")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("within 180 polls or 2 seconds", result.stderr)
+        self.assertGreater(len(calls), 0)
+        self.assertLessEqual(len(calls), 3)
+        self.assertEqual(calls, [VIEW] * len(calls))
+
+    def test_wait_invalid_budgets(self):
+        """Reject zero and nonnumeric time budgets before invoking gh."""
+        for name in ("WAIT_SECONDS", "WAIT_READ_SECONDS"):
+            for value in ("0", "x"):
+                with self.subTest(name=name, value=value):
+                    self.environment.update(WAIT_SECONDS="1800", WAIT_READ_SECONDS="30")
+                    self.environment[name] = value
+                    result, calls = self.replay("wait-run.sh", [], "123")
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("usage:", result.stderr.lower())
+                    self.assertEqual(calls, [])
+
+    def test_find_head_sha(self):
+        """Select the exact head SHA with the dispatched run list arguments."""
+        sha = "a" * 40
+        result, calls = self.replay("find-run.sh", [(0, "55\n", "")], "ci.yml", "headSha", sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "55\n")
+        self.assertEqual(
+            calls,
+            [
+                [
+                    "run",
+                    "list",
+                    "--workflow",
+                    "ci.yml",
+                    "--event",
+                    "workflow_dispatch",
+                    "--limit",
+                    "20",
+                    "--json",
+                    "databaseId,headSha",
+                    "--jq",
+                    f'[.[] | select(.headSha == "{sha}")][0].databaseId // empty',
+                ]
+            ],
+        )
+
+    def test_find_invalid_head_sha(self):
+        """Reject head SHAs outside the forty lowercase hexadecimal format."""
+        for sha in ("a" * 39, "a" * 41, "g" * 40, "A" * 40):
+            with self.subTest(sha=sha):
+                result, calls = self.replay("find-run.sh", [], "ci.yml", "headSha", sha)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("usage:", result.stderr.lower())
+                self.assertEqual(calls, [])
+
+    def test_find_unknown_field(self):
+        """Reject fields outside the allow-list before invoking gh."""
+        result, calls = self.replay("find-run.sh", [], "ci.yml", "headBranch", "main")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr.lower())
+        self.assertEqual(calls, [])
+
+    def test_find_invalid_title(self):
+        """Reject empty titles and jq string escape characters before invoking gh."""
+        for title in ("", 'Prepare "v1"', "Prepare \\v1"):
+            with self.subTest(title=title):
+                result, calls = self.replay("find-run.sh", [], "ci.yml", "displayTitle", title)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("usage:", result.stderr.lower())
+                self.assertEqual(calls, [])
+
+    def test_find_never_appears(self):
+        """Fail discovery after exactly twenty-four unmatched head-SHA reads."""
+        sha = "a" * 40
+        result, calls = self.replay("find-run.sh", [(0, "", "")] * 24, "ci.yml", "headSha", sha)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, f"no ci.yml run with headSha '{sha}' appeared\n")
+        self.assertEqual(len(calls), 24)
 
     def test_watch_list_fails_once(self):
         """Retry a failed list read and resolve the waiter beside the script."""
@@ -194,7 +299,7 @@ class TestRunScripts(unittest.TestCase):
         """Bound discovery to exactly 24 list calls."""
         result, calls = self.watch([(0, "", "")] * 24)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stderr, "no prepare-release.yml run named 'Prepare v1' appeared\n")
+        self.assertEqual(result.stderr, "no prepare-release.yml run with displayTitle 'Prepare v1' appeared\n")
         self.assertEqual(calls, [LIST] * 24)
 
     def test_watch_three_failed_views(self):
@@ -207,6 +312,7 @@ class TestRunScripts(unittest.TestCase):
 
 
 @unittest.skipUnless(BASH, "bash is not on PATH; shell scripts require bash")
+@unittest.skipUnless(shutil.which("timeout"), "timeout is not on PATH; wait reads require a deadline")
 class TestMergeStep(unittest.TestCase):
     """Execute the release PR merge step with replayed forge responses."""
 
@@ -223,6 +329,7 @@ class TestMergeStep(unittest.TestCase):
         scripts = self.directory / ".github" / "scripts"
         scripts.mkdir(parents=True)
         shutil.copy2(SCRIPTS / "wait-run.sh", scripts / "wait-run.sh")
+        shutil.copy2(SCRIPTS / "find-run.sh", scripts / "find-run.sh")
         stub = f"#!{sys.executable}\n" + textwrap.dedent("""\
             import json
             import sys
@@ -266,17 +373,23 @@ class TestMergeStep(unittest.TestCase):
         self.assertTrue(script.strip(), "merge step run block is empty")
         return script
 
-    def replay(self, waits, rerun=False):
+    def replay(self, waits, rerun=False, lists=None, head=None):
         """Run the real block with strict bash and return its recorded argv lists."""
-        answers = [(0, "", ""), (0, f"{self.BRANCH}\n", ""), (0, "55\n", "")]
-        answers.append(waits[0])
+        head = f"{self.BRANCH} {self.COMMIT}\n" if head is None else head
+        answers = [(0, "", ""), (0, head, "")]
+        answers.extend(lists if lists is not None else [(0, "55\n", "")])
+        answers.extend(waits[:1])
         if rerun:
             answers.append((0, "", ""))
         answers.extend(waits[1:])
         answers.append((0, f"{self.COMMIT}\n", ""))
         (self.directory / "answers.json").write_text(json.dumps(answers))
         (self.directory / "calls.jsonl").write_text("")
-        result = subprocess.run(
+        for name in ("wait-run.sh", "find-run.sh"):
+            path = (SCRIPTS / name).resolve()
+            self.assertTrue(path.is_file() and path.is_relative_to(SCRIPTS))
+        # Fixed bash from shutil.which, argument list, no shell, repository scripts under test, stub commands on PATH.
+        result = subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             [BASH, "-e", "-o", "pipefail", "-c", self.merge_block()],
             cwd=self.directory,
             env=self.environment,
@@ -307,7 +420,7 @@ class TestMergeStep(unittest.TestCase):
             gh,
             [
                 ["pr", "edit", "408", "--add-label", "release-ready"],
-                ["pr", "view", "408", "--json", "headRefName", "--jq", ".headRefName"],
+                ["pr", "view", "408", "--json", "headRefName,headRefOid", "--jq", r'"\(.headRefName) \(.headRefOid)"'],
                 [
                     "run",
                     "list",
@@ -315,19 +428,45 @@ class TestMergeStep(unittest.TestCase):
                     "ci.yml",
                     "--event",
                     "workflow_dispatch",
-                    "--branch",
-                    self.BRANCH,
                     "--limit",
-                    "1",
+                    "20",
                     "--json",
-                    "databaseId",
+                    "databaseId,headSha",
                     "--jq",
-                    ".[0].databaseId // empty",
+                    f'[.[] | select(.headSha == "{self.COMMIT}")][0].databaseId // empty',
                 ],
                 ["run", "view", "55", *VIEW[3:]],
                 ["pr", "view", "408", "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
             ],
         )
+
+    def test_run_registration_delayed(self):
+        """Wait for the current head's run to register before polling run 55."""
+        result, gh, python, git = self.replay([SUCCESS], lists=[(0, "", ""), (0, "55\n", "")])
+        self.assert_merged(result, python, git)
+        self.assertEqual(gh[2], gh[3])
+        self.assertEqual(gh[4], ["run", "view", "55", *VIEW[3:]])
+        self.assertEqual(len(gh), 6)
+
+    def test_run_never_found(self):
+        """Fail closed without merging or invoking python when CI never registers."""
+        result, gh, python, git = self.replay([], lists=[(0, "", "")] * 24)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"no ci.yml run with headSha '{self.COMMIT}' appeared", result.stderr)
+        self.assertEqual(len(gh), 26)
+        self.assertEqual(python, [])
+        self.assertEqual(git, [])
+        self.assertEqual(self.output.read_text(), "")
+
+    def test_head_commit_unreadable(self):
+        """Stop by name before any run lookup when the release PR head commit is unreadable."""
+        result, gh, python, git = self.replay([], lists=[], head=f"{self.BRANCH}\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("release PR #408 has no readable head commit: ''", result.stderr)
+        self.assertEqual(len(gh), 2)
+        self.assertEqual(python, [])
+        self.assertEqual(git, [])
+        self.assertEqual(self.output.read_text(), "")
 
     def test_rerun_success(self):
         """Rerun failed jobs exactly once and merge only after their success."""
@@ -372,17 +511,29 @@ class TestWaitPolicy(unittest.TestCase):
                     self.assertNotRegex(path.read_text(), r"\bgh\s+run\s+watch\b")
 
     def test_wait_budget_within_cycle_headroom(self):
-        """Keep the poll budget within the cycle timeout's stated headroom."""
+        """Keep poll and wall-clock budgets within the cycle timeout's headroom."""
         script = (SCRIPTS / "wait-run.sh").read_text()
         cycle = (ROOT / ".github" / "workflows" / "cycle.yml").read_text()
         polls = re.search(r"^WAIT_POLLS=(\d+)$", script, re.MULTILINE)
         interval = re.search(r"^\s*sleep (\d+)$", script, re.MULTILINE)
+        seconds = re.search(r'^WAIT_SECONDS="\$\{WAIT_SECONDS:-(\d+)\}"$', script, re.MULTILINE)
+        read_seconds = re.search(r'^WAIT_READ_SECONDS="\$\{WAIT_READ_SECONDS:-(\d+)\}"$', script, re.MULTILINE)
         headroom = re.search(r"# land\.py's WORST_CASE_SECONDS .* plus (\d+) for the other steps", cycle)
         self.assertIsNotNone(polls)
         self.assertIsNotNone(interval)
+        self.assertIsNotNone(seconds)
+        self.assertIsNotNone(read_seconds)
         self.assertIsNotNone(headroom)
         self.assertLessEqual(int(polls[1]) * int(interval[1]), int(headroom[1]) * 60)
+        self.assertLessEqual(int(seconds[1]), int(headroom[1]) * 60)
+        self.assertLess(int(read_seconds[1]), int(seconds[1]))
 
     def test_waiter_executable(self):
         """Require execute permission for direct invocation by the callers."""
         self.assertTrue((SCRIPTS / "wait-run.sh").stat().st_mode & 0o111)
+        self.assertTrue((SCRIPTS / "find-run.sh").stat().st_mode & 0o111)
+
+    def test_no_single_latest_run_selection(self):
+        """Reject selecting one latest run from the reused release branch."""
+        cycle = (ROOT / ".github" / "workflows" / "cycle.yml").read_text()
+        self.assertNotRegex(cycle, r"--limit\s+1\b")

@@ -78,11 +78,13 @@ jobs:
           NUMBER: ${{ steps.release-pr.outputs.number }}
         # The milestone gate holds a release PR until its milestone closes; the hourly cycle
         # releases every patch, so it labels its own release PR. release-please dispatched CI on
-        # the branch before the label existed, so that run is waited for and re-run when it failed.
+        # the branch before the label existed; match that run by the release PR head commit,
+        # wait for it and re-run it when it failed.
         run: |
           gh pr edit "$NUMBER" --add-label release-ready
-          branch="$(gh pr view "$NUMBER" --json headRefName --jq .headRefName)"
-          run="$(gh run list --workflow ci.yml --event workflow_dispatch --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          read -r branch sha <<< "$(gh pr view "$NUMBER" --json headRefName,headRefOid --jq '"\(.headRefName) \(.headRefOid)"')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "release PR #$NUMBER has no readable head commit: '$sha'" >&2; exit 1; }
+          run="$(.github/scripts/find-run.sh ci.yml headSha "$sha")"
           [[ "$run" =~ ^[0-9]+$ ]] || { echo "no dispatched CI run on $branch" >&2; exit 1; }
           conclusion="$(.github/scripts/wait-run.sh "$run")"
           if [[ "$conclusion" != success ]]; then
