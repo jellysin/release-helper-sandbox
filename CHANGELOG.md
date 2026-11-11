@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.128](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.127...v0.1.128) (2026-11-11)
+
+
+### Bug Fixes
+
+* release cycle of release-helper ba56ac77b25b488b45c12c3e2517c800fa33dcff ([#423](https://github.com/jellysin/release-helper-sandbox/issues/423)) ([a9e6833](https://github.com/jellysin/release-helper-sandbox/commit/a9e683342e65c57f65717ac3fffa03fdfc9c1803))
+
 ## [0.1.127](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.126...v0.1.127) (2026-11-11)
 
 
