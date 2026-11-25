@@ -52,6 +52,7 @@ MAX_LEFTOVERS = 2
 LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
 CATALOG_LEFTOVER = re.compile(r"^cycle/(\d+)-catalog$")
 MAX_CATALOG_LEFTOVERS = 10
+MAX_PULL_PAGES = 3
 MAX_MANIFEST_BYTES = 1024**2
 
 
@@ -359,17 +360,30 @@ def leftover_prs(pulls, pattern=LEFTOVER):
 
 
 def catalog_leftovers(pulls_url, first_page):
-    """Find catalog PRs on every page before enforcing the close limit."""
+    """Find catalog PRs within the page limit, refusing an incomplete scan."""
     pages = [first_page]
-    if len(first_page) == 100:
-        pages.extend(api(f"{pulls_url}&page=2", "--paginate", "--slurp"))
+    for n in range(2, MAX_PULL_PAGES + 1):
+        if len(pages[-1]) < 100:
+            break
+        pages.append(api(f"{pulls_url}&page={n}"))
+    if len(pages[-1]) >= 100:
+        raise SystemExit(f"more than {MAX_PULL_PAGES * 100} open pull requests; resume cannot bound its scan")
     return [pr for page in pages for pr, _ in leftover_prs(page, CATALOG_LEFTOVER)]
 
 
-def read_catalog(sha, number):
-    """Read a size-limited catalog at an immutable ref, naming the affected PR on failure."""
+def valid_catalog_plugin(plugin):
+    """Check the identifiers and version entries used to compare catalog snapshots."""
+    return (
+        isinstance(plugin, dict)
+        and isinstance(plugin.get("guid"), str)
+        and isinstance(plugin.get("versions"), list)
+        and all(isinstance(entry, dict) and isinstance(entry.get("version"), str) for entry in plugin["versions"])
+    )
+
+
+def read_catalog(sha, label):
+    """Read a size-limited catalog at an immutable ref, naming the snapshot on failure."""
     data = api(f"repos/{REPO}/contents/catalog/manifest.json?ref={sha}")
-    label = f"PR #{number}: catalog/manifest.json at {sha}"
     if data.get("encoding") != "base64":
         raise SystemExit(f"{label} encoding is not base64")
     try:
@@ -384,10 +398,8 @@ def read_catalog(sha, number):
         raise SystemExit(f"{label} contains invalid JSON: {exc}") from exc
     except (ValueError, RecursionError) as exc:
         raise SystemExit(f"{label} cannot decode JSON: {exc}") from exc
-    if not isinstance(catalog, list) or any(
-        not isinstance(plugin, dict) or not isinstance(plugin.get("versions"), list) for plugin in catalog
-    ):
-        raise SystemExit(f"{label} must list plugins with version lists")
+    if not isinstance(catalog, list) or not all(valid_catalog_plugin(plugin) for plugin in catalog):
+        raise SystemExit(f"{label} must list plugins with a guid and version entries with a version")
     return catalog
 
 
@@ -404,10 +416,11 @@ def superseded(head, main):
 def settle_catalog(candidates):
     """Close superseded catalog PRs against one main snapshot, leaving other heads intact."""
     main_sha = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
-    main = read_catalog(main_sha, candidates[0]["number"])
+    main = read_catalog(main_sha, f"main: catalog/manifest.json at {main_sha}")
     for pr in candidates:
         number = pr["number"]
-        head = read_catalog(pr["head"]["sha"], number)
+        sha = pr["head"]["sha"]
+        head = read_catalog(sha, f"PR #{number}: catalog/manifest.json at {sha}")
         if not superseded(head, main):
             print(f"PR #{number}: catalog entries missing on main; left open for this cycle's import")
             continue

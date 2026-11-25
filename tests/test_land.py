@@ -246,8 +246,9 @@ class TestResumeCatalog(unittest.TestCase):
         self.contents = f"repos/{land.REPO}/contents/catalog/manifest.json?ref="
         self.pr = make_candidate_pr(ref="cycle/123-catalog")
         self.pulls = [self.pr]
+        self.pulls_url = f"repos/{land.REPO}/pulls?state=open&per_page=100"
         self.responses = {
-            f"repos/{land.REPO}/pulls?state=open&per_page=100": self.pulls,
+            self.pulls_url: self.pulls,
             self.main_ref: {"object": {"sha": self.main_sha}},
             self.contents + self.main_sha: self.encoded(b'[{"guid": "a", "versions": []}]'),
             self.contents + "oldsha": self.encoded(b'[{"guid": "a", "versions": []}]'),
@@ -323,23 +324,36 @@ class TestResumeCatalog(unittest.TestCase):
         """Count catalog candidates on subsequent pages before the first close."""
         self.pulls[:] = [make_candidate_pr(number=n, ref=f"cycle/{n}-catalog") for n in range(10)]
         self.pulls.extend(make_candidate_pr(number=n, ref="unrelated") for n in range(10, 100))
-        pages = [[self.pr]]
-        reads = self.responses.__getitem__
-
-        def fake_api(path, *flags):
-            """Serve the remaining pull pages only for the paginated request."""
-            if path == f"repos/{land.REPO}/pulls?state=open&per_page=100&page=2":
-                self.assertEqual(flags, ("--paginate", "--slurp"))
-                return pages
-            return reads(path)
-
-        self.api.side_effect = fake_api
+        page2 = f"{self.pulls_url}&page=2"
+        self.responses[page2] = [{}] * 39 + [self.pr]
         with self.assertRaisesRegex(SystemExit, "11"):
             land.resume()
+        self.assertEqual(self.api.call_args_list, [unittest.mock.call(self.pulls_url), unittest.mock.call(page2)])
+        self.gh.assert_not_called()
+
+    def test_short_third_page(self):
+        """Settle a catalog PR found at the end of a short third page."""
+        self.pulls[:] = [{}] * 100
+        page2, page3 = (f"{self.pulls_url}&page={n}" for n in (2, 3))
+        self.responses[page2] = [{}] * 100
+        self.responses[page3] = [{}] * 4 + [self.pr]
+        land.resume()
+        paths = [self.pulls_url, page2, page3, self.main_ref, self.contents + self.main_sha, self.contents + "oldsha"]
+        self.assertEqual(self.api.call_args_list, [unittest.mock.call(path) for path in paths])
+        self.gh.assert_called_once()
+
+    def test_full_third_page(self):
+        """Refuse an incomplete scan before settling any PR."""
+        self.pulls[:] = [self.pr] + [{}] * 99
+        page2, page3 = (f"{self.pulls_url}&page={n}" for n in (2, 3))
+        self.responses[page2] = self.responses[page3] = [{}] * 100
+        with self.assertRaisesRegex(SystemExit, "more than 300 open pull requests; resume cannot bound its scan"):
+            land.resume()
+        self.assertEqual(self.api.call_args_list, [unittest.mock.call(path) for path in (self.pulls_url, page2, page3)])
         self.gh.assert_not_called()
 
     def test_refuses_invalid_manifest(self):
-        """Refuse either snapshot with a PR-specific diagnostic and preserve the branch."""
+        """Identify the malformed snapshot by source and commit before closing its branch."""
         cases = [
             ("encoding", dict(self.encoded(b"[]"), encoding="none"), "base64"),
             ("invalid base64", {"encoding": "base64", "content": "!W10="}, "base64"),
@@ -351,16 +365,39 @@ class TestResumeCatalog(unittest.TestCase):
             ("nested arrays", self.encoded(b"[" * 2000 + b"]" * 2000), "(JSON|list)"),
             ("integer limit", self.encoded(b"[" + b"1" * 5000 + b"]"), "JSON"),
         ]
-        for ref in ("oldsha", self.main_sha):
+        for ref, source in (("oldsha", "PR #162"), (self.main_sha, "main")):
             for name, response, reason in cases:
                 with (
                     self.subTest(ref=ref, name=name),
                     unittest.mock.patch.dict(self.responses, {self.contents + ref: response}),
                 ):
                     self.gh.reset_mock()
-                    with self.assertRaisesRegex(SystemExit, f"PR #162: .*{reason}"):
+                    label = re.escape(f"{source}: catalog/manifest.json at {ref}")
+                    with self.assertRaisesRegex(SystemExit, f"^{label} .*{reason}"):
                         land.resume()
                     self.gh.assert_not_called()
+
+    def test_invalid_plugin_entries(self):
+        """Reject malformed plugin and version identities at the read boundary."""
+        cases = {
+            "missing guid": {"versions": []},
+            "non-string guid": {"guid": 1, "versions": []},
+            "non-object version": {"guid": "a", "versions": ["1"]},
+            "missing version": {"guid": "a", "versions": [{}]},
+            "non-string version": {"guid": "a", "versions": [{"version": 1}]},
+        }
+        for name, plugin in cases.items():
+            with self.subTest(name=name):
+                self.responses[self.contents + "oldsha"] = self.encoded(json.dumps([plugin]).encode())
+                with self.assertRaisesRegex(
+                    SystemExit, "^snapshot must list plugins with a guid and version entries with a version$"
+                ):
+                    land.read_catalog("oldsha", "snapshot")
+
+    def test_accepts_minimal_catalog(self):
+        catalog = [{"guid": "a", "versions": [{"version": "1"}]}]
+        self.responses[self.contents + "oldsha"] = self.encoded(json.dumps(catalog).encode())
+        self.assertEqual(land.read_catalog("oldsha", "snapshot"), catalog)
 
     def test_accepts_one_mib(self):
         """Allow a valid manifest at the exact decoded byte limit."""
