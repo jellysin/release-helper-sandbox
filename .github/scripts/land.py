@@ -17,6 +17,7 @@ Standard library and gh only, with the job's token. Every wait is bounded; any o
 """
 
 import base64
+import binascii
 import json
 import os
 import re
@@ -49,6 +50,9 @@ RUN_POLLS = 120  # twenty minutes: codeql.yml's timeout-minutes
 # Leftover cycle PRs one resume settles; more stops the cycle. Bounded so the waits fit the job timeout.
 MAX_LEFTOVERS = 2
 LEFTOVER = re.compile(r"^cycle/(\d+)-change$")
+CATALOG_LEFTOVER = re.compile(r"^cycle/(\d+)-catalog$")
+MAX_CATALOG_LEFTOVERS = 10
+MAX_MANIFEST_BYTES = 1024**2
 
 
 def worst_case_seconds(polls, run_polls, pause, leftovers):
@@ -267,6 +271,24 @@ def merge_when_clean(number):
     raise SystemExit(f"PR #{number} did not become CLEAN in time")
 
 
+def pr_body(files) -> str:
+    """Describe the cycle's data changes and fill the repository's PR checklist."""
+    run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
+    reason = "not applicable: data files only; the required checks (CI, CodeQL, governance) gate the merge"
+    return (
+        "## Description\n\n"
+        f"Release cycle run {run_id} commits {', '.join(files)} on main through this pull request as the ruleset "
+        "requires. Only data files change. The cycle approves its CI runs and squash-merges this pull request "
+        "when CLEAN (`.github/scripts/land.py`).\n\n"
+        "## Pre-Merge Verification Checklist\n\n"
+        f"- [ ] Local verification passed: `make verify-all` — {reason}\n"
+        f"- [ ] No new HISS / NASA Power-of-10 infractions (all new/modified functions $\\le 60$ LOC) — {reason}\n"
+        f"- [ ] 3D Tests included (Positive, Negative, Boundary) for public APIs — {reason}\n"
+        f"- [ ] Agent contexts in sync: `standardsctl compile-context --verify` — {reason}\n"
+        "- [x] Commit messages adhere to Conventional Commits format — the PR title is the commit subject."
+    )
+
+
 def land(branch, message, files):
     """Create a branch with the specified files, open a PR, await CI, and merge when clean."""
     base = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
@@ -283,7 +305,7 @@ def land(branch, message, files):
         "--title",
         message.partition("\n")[0],
         "--body",
-        "Opened by the release cycle; merged by it when CLEAN.",
+        pr_body(files),
     )
     number = url.rsplit("/", 1)[1]
     approve_and_wait(number)
@@ -320,7 +342,7 @@ def rebuild(pr, head_sha):
     return oid
 
 
-def leftover_prs(pulls):
+def leftover_prs(pulls, pattern=LEFTOVER):
     """Filter open pull requests to valid leftover cycle PR candidates."""
     candidates = []
     for pr in pulls:
@@ -330,21 +352,88 @@ def leftover_prs(pulls):
         if not head_repo or head_repo.get("full_name") != REPO:
             continue
         head_ref = pr.get("head", {}).get("ref", "")
-        match = LEFTOVER.match(head_ref)
+        match = pattern.match(head_ref)
         if match:
             candidates.append((pr, match.group(1)))
     return candidates
 
 
+def catalog_leftovers(pulls_url, first_page):
+    """Find catalog PRs on every page before enforcing the close limit."""
+    pages = [first_page]
+    if len(first_page) == 100:
+        pages.extend(api(f"{pulls_url}&page=2", "--paginate", "--slurp"))
+    return [pr for page in pages for pr, _ in leftover_prs(page, CATALOG_LEFTOVER)]
+
+
+def read_catalog(sha, number):
+    """Read a size-limited catalog at an immutable ref, naming the affected PR on failure."""
+    data = api(f"repos/{REPO}/contents/catalog/manifest.json?ref={sha}")
+    label = f"PR #{number}: catalog/manifest.json at {sha}"
+    if data.get("encoding") != "base64":
+        raise SystemExit(f"{label} encoding is not base64")
+    try:
+        raw = base64.b64decode("".join(data["content"].splitlines()).encode(), validate=True)
+    except binascii.Error as exc:
+        raise SystemExit(f"{label} contains invalid base64: {exc}") from exc
+    if len(raw) > MAX_MANIFEST_BYTES:
+        raise SystemExit(f"{label} exceeds 1 MiB")
+    try:
+        catalog = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{label} contains invalid JSON: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
+        raise SystemExit(f"{label} cannot decode JSON: {exc}") from exc
+    if not isinstance(catalog, list) or any(
+        not isinstance(plugin, dict) or not isinstance(plugin.get("versions"), list) for plugin in catalog
+    ):
+        raise SystemExit(f"{label} must list plugins with version lists")
+    return catalog
+
+
+def superseded(head, main):
+    """Return whether main contains every head plugin and its exact version entries."""
+    by_guid = {plugin["guid"]: {v["version"]: v for v in plugin["versions"]} for plugin in main}
+    for plugin in head:
+        versions = by_guid.get(plugin["guid"])
+        if versions is None or any(versions.get(v["version"]) != v for v in plugin["versions"]):
+            return False
+    return True
+
+
+def settle_catalog(candidates):
+    """Close superseded catalog PRs against one main snapshot, leaving other heads intact."""
+    main_sha = api(f"repos/{REPO}/git/ref/heads/main")["object"]["sha"]
+    main = read_catalog(main_sha, candidates[0]["number"])
+    for pr in candidates:
+        number = pr["number"]
+        head = read_catalog(pr["head"]["sha"], number)
+        if not superseded(head, main):
+            print(f"PR #{number}: catalog entries missing on main; left open for this cycle's import")
+            continue
+        comment = (
+            f"Superseded: every catalog entry of this pull request is on main at {main_sha[:12]}. "
+            f"Closed by release cycle run {os.environ.get('GITHUB_RUN_ID', 'unknown')}."
+        )
+        gh("pr", "close", str(number), "--delete-branch", "--comment", comment)
+        print(f"PR #{number}: {comment}")
+
+
 def resume():
     """Settle the pull requests earlier cycles left open at a bounded wait, freshness bound to their own cycle."""
-    pulls = api(f"repos/{REPO}/pulls?state=open&per_page=100") or []
+    pulls_url = f"repos/{REPO}/pulls?state=open&per_page=100"
+    pulls = api(pulls_url) or []
     candidates = leftover_prs(pulls)
-    if not candidates:
+    catalog = catalog_leftovers(pulls_url, pulls)
+    if not (candidates or catalog):
         print("no leftover cycle PR")
         return
+    if len(catalog) > MAX_CATALOG_LEFTOVERS:
+        raise SystemExit(f"more than {MAX_CATALOG_LEFTOVERS} leftover catalog PRs ({len(catalog)})")
     if len(candidates) > MAX_LEFTOVERS:
         raise SystemExit(f"more than {MAX_LEFTOVERS} leftover cycle PRs ({len(candidates)})")
+    if catalog:
+        settle_catalog(catalog)
     for pr, cycle_id in candidates:
         run = api(f"repos/{REPO}/actions/runs/{cycle_id}")
         if not run["path"].endswith(".github/workflows/cycle.yml") or run["repository"]["full_name"] != REPO:

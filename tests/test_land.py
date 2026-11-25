@@ -154,6 +154,221 @@ def make_candidate_pr(number=162, ref="cycle/123-change", title="fix: cycle test
     }
 
 
+class TestPrBody(unittest.TestCase):
+    def test_template_checklist_and_files(self):
+        """Keep every template item, qualify local checks and list every committed file."""
+        template = (SCRIPT_PATH.parents[1] / "pull_request_template.md").read_text()
+        checklist = template.split("## Pre-Merge Verification Checklist", 1)[1].replace("\n  ", " ").splitlines()
+        items = [line.removeprefix("- [ ] ") for line in checklist if line.startswith("- [ ] ")]
+        self.assertEqual(len(items), 5)
+        reason = "not applicable: data files only; the required checks (CI, CodeQL, governance) gate the merge"
+        with unittest.mock.patch.object(land, "os", environ={"GITHUB_RUN_ID": "98765"}):
+            for files in (["version.txt"], ["version.txt", "CHANGELOG.md", "catalog/manifest.json"]):
+                with self.subTest(files=files):
+                    body = land.pr_body(files)
+                    description, checklist = body.split("\n\n## Pre-Merge Verification Checklist\n\n")
+                    self.assertTrue(description.startswith("## Description\n\n"))
+                    for phrase in (
+                        "run 98765",
+                        ", ".join(files),
+                        "main",
+                        "ruleset",
+                        "CI",
+                        "CLEAN",
+                        ".github/scripts/land.py",
+                    ):
+                        self.assertIn(phrase, description)
+                    lines = checklist.splitlines()
+                    self.assertEqual(len(lines), 5)
+                    for item, line in zip(items[:4], lines[:4], strict=True):
+                        self.assertTrue(line.startswith(f"- [ ] {item}"))
+                        self.assertTrue(line.endswith(reason))
+                    self.assertTrue(lines[4].startswith(f"- [x] {items[4]}"))
+                    self.assertIn("commit subject", lines[4])
+
+    def test_missing_run_id(self):
+        """An unset run ID gets an explicit fallback."""
+        with unittest.mock.patch.object(land, "os", environ={}):
+            self.assertIn("run unknown", land.pr_body(["version.txt"]))
+
+    def test_land_passes_body(self):
+        """Pass the body for these files and the commit headline to gh pr create."""
+        files = ["version.txt"]
+        with (
+            unittest.mock.patch.object(land, "api", return_value={"object": {"sha": "base"}}),
+            unittest.mock.patch.object(land, "signed_commit"),
+            unittest.mock.patch.object(land, "pr_body", return_value="template body") as body,
+            unittest.mock.patch.object(land, "gh", return_value="url/7") as gh,
+            unittest.mock.patch.object(land, "approve_and_wait"),
+            unittest.mock.patch.object(land, "merge_when_clean"),
+        ):
+            land.land("cycle/7-change", "fix: cycle\n\ndetails", files)
+        body.assert_called_once_with(files)
+        gh.assert_called_once_with(
+            "pr",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            "cycle/7-change",
+            "--title",
+            "fix: cycle",
+            "--body",
+            "template body",
+        )
+
+
+class TestSuperseded(unittest.TestCase):
+    def test_entry_comparison(self):
+        """Compare all plugins and complete entries by identity, independently of order."""
+        v1 = {"version": "1", "checksum": "abc"}
+        v2 = {"version": "2", "checksum": "xyz"}
+        main = [{"guid": "a", "versions": [v2, v1]}, {"guid": "b", "versions": []}]
+        cases = [
+            ("equal", main, True),
+            ("subset", [{"guid": "b", "versions": []}, {"guid": "a", "versions": [v1]}], True),
+            ("different entry", [{"guid": "a", "versions": [v2, dict(v1, checksum="other")]}], False),
+            ("missing version", [{"guid": "a", "versions": [v1, {"version": "3"}]}], False),
+            ("wrong plugin", [{"guid": "b", "versions": [v1]}], False),
+            ("missing guid", [main[0], {"guid": "c", "versions": []}], False),
+            ("empty versions", [{"guid": "a", "versions": []}], True),
+        ]
+        for name, head, expected in cases:
+            with self.subTest(name=name):
+                self.assertIs(land.superseded(head, main), expected)
+
+
+class TestResumeCatalog(unittest.TestCase):
+    def setUp(self):
+        """Route reads by exact endpoint and keep all forge operations in memory."""
+        self.main_sha = "0123456789abcdef"
+        self.main_ref = f"repos/{land.REPO}/git/ref/heads/main"
+        self.contents = f"repos/{land.REPO}/contents/catalog/manifest.json?ref="
+        self.pr = make_candidate_pr(ref="cycle/123-catalog")
+        self.pulls = [self.pr]
+        self.responses = {
+            f"repos/{land.REPO}/pulls?state=open&per_page=100": self.pulls,
+            self.main_ref: {"object": {"sha": self.main_sha}},
+            self.contents + self.main_sha: self.encoded(b'[{"guid": "a", "versions": []}]'),
+            self.contents + "oldsha": self.encoded(b'[{"guid": "a", "versions": []}]'),
+        }
+        self.api = self.enterContext(unittest.mock.patch.object(land, "api", side_effect=self.responses.__getitem__))
+        self.gh = self.enterContext(unittest.mock.patch.object(land, "gh"))
+        self.output = self.enterContext(unittest.mock.patch("builtins.print"))
+        self.enterContext(unittest.mock.patch.object(land, "os", environ={"GITHUB_RUN_ID": "321"}))
+
+    @staticmethod
+    def encoded(raw):
+        """Build a GitHub Contents response with wrapped base64."""
+        return {"encoding": "base64", "content": base64.encodebytes(raw).decode()}
+
+    def test_closes_only_superseded(self):
+        """Read main once, preserve outstanding entries and identify the exact snapshot on close."""
+        self.pulls.insert(0, make_candidate_pr(number=161, ref="cycle/121-catalog", sha="unimported"))
+        self.responses[self.contents + "unimported"] = self.encoded(b'[{"guid":"b","versions":[]}]')
+        land.resume()
+        comment = "Superseded: every catalog entry of this pull request is on main at 0123456789ab. Closed by release cycle run 321."
+        self.gh.assert_called_once_with("pr", "close", "162", "--delete-branch", "--comment", comment)
+        self.output.assert_any_call("PR #161: catalog entries missing on main; left open for this cycle's import")
+        self.assertEqual(self.output.call_count, 2)
+        for path in (self.main_ref, self.contents + self.main_sha):
+            self.assertEqual(self.api.call_args_list.count(unittest.mock.call(path)), 1)
+
+    def test_catalog_limit(self):
+        """Accept ten catalog PRs independently of the change limit and refuse eleven before closing any."""
+        self.assertEqual(land.MAX_CATALOG_LEFTOVERS, 10)
+        self.pulls[:] = [make_candidate_pr(number=n, ref=f"cycle/{n}-catalog") for n in range(10)]
+        land.resume()
+        self.assertEqual(self.gh.call_count, 10)
+        self.gh.reset_mock()
+        self.pulls.append(self.pr)
+        with self.assertRaisesRegex(SystemExit, "11"):
+            land.resume()
+        self.gh.assert_not_called()
+
+    def test_catalog_settled_before_change(self):
+        """Close the catalog before the change PR enters its approval and merge loop."""
+        self.pulls.insert(0, make_candidate_pr(number=160))
+        started = "2026-11-24T12:00:00Z"
+        self.responses[f"repos/{land.REPO}/actions/runs/123"] = {
+            "path": ".github/workflows/cycle.yml",
+            "repository": {"full_name": land.REPO},
+            "created_at": started,
+        }
+        self.gh.return_value = json.dumps({"mergeStateStatus": "CLEAN", "headRefOid": "change-sha"})
+        with (
+            unittest.mock.patch.object(land, "missing_workflows", return_value=[]),
+            unittest.mock.patch.object(land, "approve_and_wait") as approve,
+            unittest.mock.patch.object(land, "merge_when_clean") as merge,
+        ):
+            land.resume()
+        self.assertEqual(
+            [call.args[:3] for call in self.gh.call_args_list], [("pr", "close", "162"), ("pr", "view", "160")]
+        )
+        approve.assert_called_once_with(160, started=started, sha=None)
+        merge.assert_called_once_with(160)
+
+    def test_ignores_foreign_and_unrelated_prs(self):
+        """Skip foreign authors, fork heads and branches outside the catalog naming convention."""
+        foreign = make_candidate_pr(ref="cycle/11-catalog")
+        foreign["user"]["login"] = "elsewhere"
+        fork = make_candidate_pr(ref="cycle/12-catalog")
+        fork["head"]["repo"]["full_name"] = "fork/repo"
+        self.pulls[:] = [foreign, fork, make_candidate_pr(ref="cycle/abc-catalog")]
+        land.resume()
+        self.assertEqual(self.api.call_count, 1)
+        self.gh.assert_not_called()
+
+    def test_limit_across_pull_pages(self):
+        """Count catalog candidates on subsequent pages before the first close."""
+        self.pulls[:] = [make_candidate_pr(number=n, ref=f"cycle/{n}-catalog") for n in range(10)]
+        self.pulls.extend(make_candidate_pr(number=n, ref="unrelated") for n in range(10, 100))
+        pages = [[self.pr]]
+        reads = self.responses.__getitem__
+
+        def fake_api(path, *flags):
+            """Serve the remaining pull pages only for the paginated request."""
+            if path == f"repos/{land.REPO}/pulls?state=open&per_page=100&page=2":
+                self.assertEqual(flags, ("--paginate", "--slurp"))
+                return pages
+            return reads(path)
+
+        self.api.side_effect = fake_api
+        with self.assertRaisesRegex(SystemExit, "11"):
+            land.resume()
+        self.gh.assert_not_called()
+
+    def test_refuses_invalid_manifest(self):
+        """Refuse either snapshot with a PR-specific diagnostic and preserve the branch."""
+        cases = [
+            ("encoding", dict(self.encoded(b"[]"), encoding="none"), "base64"),
+            ("invalid base64", {"encoding": "base64", "content": "!W10="}, "base64"),
+            ("size", self.encoded(b"[]" + b" " * (1024**2 - 1)), "1 MiB"),
+            ("bad JSON", self.encoded(b"["), "JSON"),
+            ("bad Unicode", self.encoded(b'["\xff"]'), "JSON"),
+            ("object", self.encoded(b"{}"), "list"),
+            ("versions object", self.encoded(b'[{"guid":"a","versions":{}}]'), "list"),
+            ("nested arrays", self.encoded(b"[" * 2000 + b"]" * 2000), "(JSON|list)"),
+            ("integer limit", self.encoded(b"[" + b"1" * 5000 + b"]"), "JSON"),
+        ]
+        for ref in ("oldsha", self.main_sha):
+            for name, response, reason in cases:
+                with (
+                    self.subTest(ref=ref, name=name),
+                    unittest.mock.patch.dict(self.responses, {self.contents + ref: response}),
+                ):
+                    self.gh.reset_mock()
+                    with self.assertRaisesRegex(SystemExit, f"PR #162: .*{reason}"):
+                        land.resume()
+                    self.gh.assert_not_called()
+
+    def test_accepts_one_mib(self):
+        """Allow a valid manifest at the exact decoded byte limit."""
+        self.responses[self.contents + "oldsha"] = self.encoded(b"[]" + b" " * (1024**2 - 2))
+        land.resume()
+        self.gh.assert_called_once()
+
+
 class TestResumeRebuild(unittest.TestCase):
     def assert_rebuilt(self, patch_called, created_commits, content_bytes):
         """Assert the branch was reset to main and the change re-committed on it once."""
