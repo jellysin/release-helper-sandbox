@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.176](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.175...v0.1.176) (2026-11-28)
+
+
+### Bug Fixes
+
+* release cycle of release-helper f5389f0b6d46dd017e6e0c70cfceddf2d083cb66 ([#572](https://github.com/jellysin/release-helper-sandbox/issues/572)) ([0edfd16](https://github.com/jellysin/release-helper-sandbox/commit/0edfd16a1f6d954123987adeb54ae35284549a20))
+* release cycle of release-helper f5389f0b6d46dd017e6e0c70cfceddf2d083cb66 ([#574](https://github.com/jellysin/release-helper-sandbox/issues/574)) ([12dca4e](https://github.com/jellysin/release-helper-sandbox/commit/12dca4e6524a5fc9b42523ea10cad5f7682ff61d))
+* release cycle of release-helper f5389f0b6d46dd017e6e0c70cfceddf2d083cb66 ([#575](https://github.com/jellysin/release-helper-sandbox/issues/575)) ([818e629](https://github.com/jellysin/release-helper-sandbox/commit/818e629853f6295000bd4f2a00a9c3c65ce8485d))
+* release cycle of release-helper f5389f0b6d46dd017e6e0c70cfceddf2d083cb66 ([#576](https://github.com/jellysin/release-helper-sandbox/issues/576)) ([344fdc6](https://github.com/jellysin/release-helper-sandbox/commit/344fdc6025df05cc9d5ea018a050dcbc130b886b))
+* release cycle of release-helper f5389f0b6d46dd017e6e0c70cfceddf2d083cb66 ([#578](https://github.com/jellysin/release-helper-sandbox/issues/578)) ([8335f7f](https://github.com/jellysin/release-helper-sandbox/commit/8335f7fbed56ca47247dc5a059cfe638813df65b))
+
 ## [0.1.175](https://github.com/jellysin/release-helper-sandbox/compare/v0.1.174...v0.1.175) (2026-11-26)
 
 
